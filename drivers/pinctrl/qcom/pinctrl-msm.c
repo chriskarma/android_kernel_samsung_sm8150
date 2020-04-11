@@ -116,7 +116,9 @@ struct msm_pinctrl {
 };
 static struct msm_pinctrl *msm_pinctrl_data;
 
+#ifdef CONFIG_SEC_PM
 static int total_pin_count=0;
+#endif /* CONFIG_SEC_PM */
 
 static void __iomem *reassign_pctrl_reg(
 		const struct msm_pinctrl_soc_data *soc,
@@ -624,7 +626,7 @@ static void msm_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 	raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 }
 
-#ifdef CONFIG_SEC_PM_DEBUG
+#ifdef CONFIG_SEC_PM
 int msm_set_gpio_status(struct gpio_chip *chip, uint pin_no, uint id, bool level)
 {
 	const struct msm_pingroup *g;
@@ -729,7 +731,7 @@ int msm_gp_get_value(struct gpio_chip *chip, uint pin_no, int in_out_type)
 
 	return 0;
 }
-#endif
+#endif /* CONFIG_SEC_PM */
 
 #ifdef CONFIG_DEBUG_FS
 #include <linux/seq_file.h>
@@ -776,8 +778,10 @@ static void msm_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
 	unsigned i;
 
 	for (i = 0; i < chip->ngpio; i++, gpio++) {
+#ifdef CONFIG_SEC_PM
 		if(!msm_gpio_is_valid(i))
 			continue;
+#endif /* CONFIG_SEC_PM */
 
 		msm_gpio_dbg_show_one(s, NULL, chip, i, gpio);
 		seq_puts(s, "\n");
@@ -2242,7 +2246,9 @@ int msm_pinctrl_probe(struct platform_device *pdev,
 	msm_pinctrl_desc.name = dev_name(&pdev->dev);
 	msm_pinctrl_desc.pins = pctrl->soc->pins;
 	msm_pinctrl_desc.npins = pctrl->soc->npins;
+#ifdef CONFIG_SEC_PM
 	total_pin_count = msm_pinctrl_desc.npins;
+#endif /* CONFIG_SEC_PM */
 	pctrl->pctrl = devm_pinctrl_register(&pdev->dev, &msm_pinctrl_desc,
 					     pctrl);
 	if (IS_ERR(pctrl->pctrl)) {
