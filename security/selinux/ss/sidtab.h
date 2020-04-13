@@ -9,6 +9,7 @@
 #define _SS_SIDTAB_H_
 
 #include "context.h"
+#include "flask.h"
 
 struct sidtab_node {
 	u32 sid;		/* security identifier */
