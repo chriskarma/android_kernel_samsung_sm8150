@@ -1568,6 +1568,8 @@ static int _sde_crtc_check_planes_within_crtc_roi(struct drm_crtc *crtc,
 		plane_roi.y = pstate->crtc_y;
 		plane_roi.w = pstate->crtc_w;
 		plane_roi.h = pstate->crtc_h;
+		SDE_EVT32(pstate, ((unsigned long long)pstate) >> 32, state,
+			((unsigned long long)state) >> 32, pstate->crtc_w, pstate->crtc_h, crtc_roi->w, crtc_roi->h);
 		sde_kms_rect_intersect(crtc_roi, &plane_roi, &intersection);
 		if (!sde_kms_rect_is_equal(&plane_roi, &intersection)) {
 			SDE_ERROR(
@@ -2126,7 +2128,9 @@ static void _sde_crtc_blend_setup_mixer(struct drm_crtc *crtc,
 		cnt++;
 	}
 
-	sort(pstates, cnt, sizeof(pstates[0]), pstate_cmp, NULL);
+	if (cnt > 0)
+		sort(pstates, cnt, sizeof(pstates[0]), pstate_cmp, NULL);
+
 	_sde_crtc_set_src_split_order(crtc, pstates, cnt);
 
 	if (lm && lm->ops.setup_dim_layer) {
@@ -3077,6 +3081,12 @@ static void _sde_crtc_set_input_fence_timeout(struct sde_crtc_state *cstate)
 	cstate->input_fence_timeout_ns =
 		sde_crtc_get_property(cstate, CRTC_PROP_INPUT_FENCE_TIMEOUT);
 	cstate->input_fence_timeout_ns *= NSEC_PER_MSEC;
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	/* Increase fence timeout value to 20 sec (case 03381402 / P180412-02009) */
+	cstate->input_fence_timeout_ns *= 2;
+	SDE_DEBUG("input_fence_timeout_ns %llu \n ", cstate->input_fence_timeout_ns);
+#endif
 }
 
 /**
@@ -3101,18 +3111,26 @@ static void _sde_crtc_clear_dim_layers_v1(struct sde_crtc_state *cstate)
  * @cstate:      Pointer to sde crtc state
  * @user_ptr:    User ptr for sde_drm_dim_layer_v1 struct
  */
-static void _sde_crtc_set_dim_layer_v1(struct sde_crtc_state *cstate,
-		void __user *usr_ptr)
+static void _sde_crtc_set_dim_layer_v1(struct drm_crtc *crtc,
+		struct sde_crtc_state *cstate, void __user *usr_ptr)
 {
 	struct sde_drm_dim_layer_v1 dim_layer_v1;
 	struct sde_drm_dim_layer_cfg *user_cfg;
 	struct sde_hw_dim_layer *dim_layer;
 	u32 count, i;
+	struct sde_kms *kms;
 
-	if (!cstate) {
-		SDE_ERROR("invalid cstate\n");
+	if (!crtc || !cstate) {
+		SDE_ERROR("invalid crtc or cstate\n");
 		return;
 	}
+
+	kms = _sde_crtc_get_kms(crtc);
+	if (!kms || !kms->catalog) {
+		SDE_ERROR("invalid kms\n");
+		return;
+	}
+
 	dim_layer = cstate->dim_layer;
 
 	if (!usr_ptr) {
@@ -3132,14 +3150,14 @@ static void _sde_crtc_set_dim_layer_v1(struct sde_crtc_state *cstate,
 		SDE_ERROR("invalid number of dim_layers:%d", count);
 		return;
 	}
-
 	/* populate from user space */
 	cstate->num_dim_layers = count;
 	for (i = 0; i < count; i++) {
 		user_cfg = &dim_layer_v1.layer_cfg[i];
 
 		dim_layer[i].flags = user_cfg->flags;
-		dim_layer[i].stage = user_cfg->stage + SDE_STAGE_0;
+		dim_layer[i].stage = (kms->catalog->has_base_layer) ?
+			user_cfg->stage : user_cfg->stage + SDE_STAGE_0;
 
 		dim_layer[i].rect.x = user_cfg->rect.x1;
 		dim_layer[i].rect.y = user_cfg->rect.y1;
@@ -4781,6 +4799,9 @@ static void sde_crtc_disable(struct drm_crtc *crtc)
 	u32 power_on;
 	bool in_cont_splash = false;
 	int ret, i;
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	int blank;
+#endif
 
 	if (!crtc || !crtc->dev || !crtc->dev->dev_private || !crtc->state) {
 		SDE_ERROR("invalid crtc\n");
@@ -4866,7 +4887,6 @@ static void sde_crtc_disable(struct drm_crtc *crtc)
 					sde_crtc->name, node->event);
 	}
 	spin_unlock_irqrestore(&sde_crtc->spin_lock, flags);
-
 	drm_for_each_encoder(encoder, crtc->dev) {
 		if (encoder->crtc != crtc)
 			continue;
@@ -4922,6 +4942,13 @@ static void sde_crtc_disable(struct drm_crtc *crtc)
 	cstate->bw_split_vote = false;
 
 	mutex_unlock(&sde_crtc->crtc_lock);
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	/* notify registered clients about suspend event */
+	blank = FB_BLANK_POWERDOWN;
+	__msm_drm_notifier_call_chain(FB_EVENT_BLANK, &blank);
+#endif
+
 }
 
 static void sde_crtc_enable(struct drm_crtc *crtc,
@@ -4936,6 +4963,9 @@ static void sde_crtc_enable(struct drm_crtc *crtc,
 	u32 power_on;
 	int ret, i;
 	struct sde_crtc_state *cstate;
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	int blank;
+#endif
 
 	if (!crtc || !crtc->dev || !crtc->dev->dev_private) {
 		SDE_ERROR("invalid crtc\n");
@@ -5017,6 +5047,12 @@ static void sde_crtc_enable(struct drm_crtc *crtc,
 	/* Enable ESD thread */
 	for (i = 0; i < cstate->num_connectors; i++)
 		sde_connector_schedule_status_work(cstate->connectors[i], true);
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	/* notify registered clients about resume event */
+	blank = FB_BLANK_UNBLANK;
+	__msm_drm_notifier_call_chain(FB_EVENT_BLANK, &blank);
+#endif
 }
 
 /* no input validation - caller API has all the checks */
@@ -5168,9 +5204,12 @@ static int _sde_crtc_check_secure_state(struct drm_crtc *crtc,
 			int sec_stage = cnt ? pstates[0].sde_pstate->stage :
 						cstate->dim_layer[0].stage;
 
+			if (!sde_kms->catalog->has_base_layer)
+				sec_stage -= SDE_STAGE_0;
+
 			if ((!cnt && !cstate->num_dim_layers) ||
 				(sde_kms->catalog->sui_supported_blendstage
-						!= (sec_stage - SDE_STAGE_0))) {
+						!= sec_stage)) {
 				SDE_ERROR(
 				  "crtc%d: empty cnt%d/dim%d or bad stage%d\n",
 					DRMID(crtc), cnt,
@@ -5244,6 +5283,7 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 	struct sde_crtc *sde_crtc;
 	struct plane_state *pstates = NULL;
 	struct sde_crtc_state *cstate;
+	struct sde_kms *kms;
 
 	const struct drm_plane_state *pstate;
 	struct drm_plane *plane;
@@ -5255,6 +5295,7 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 	int multirect_count = 0;
 	const struct drm_plane_state *pipe_staged[SSPP_MAX];
 	int left_zpos_cnt = 0, right_zpos_cnt = 0;
+	int inc_sde_stage = 0;
 
 	struct drm_connector *conn;
 	struct drm_connector_list_iter conn_iter;
@@ -5268,6 +5309,12 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 
 	sde_crtc = to_sde_crtc(crtc);
 	cstate = to_sde_crtc_state(state);
+	kms = _sde_crtc_get_kms(crtc);
+
+	if (!kms || !kms->catalog) {
+		SDE_ERROR("Invalid kms\n");
+		return -EINVAL;
+	}
 
 	if (!state->enable || !state->active) {
 		SDE_DEBUG("crtc%d -> enable %d, active %d, skip atomic_check\n",
@@ -5317,23 +5364,6 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 	mixer_width = sde_crtc_get_mixer_width(sde_crtc, cstate, mode);
 	mixer_height = sde_crtc_get_mixer_height(sde_crtc, cstate, mode);
 
-	if (cstate->num_ds_enabled) {
-		if (!state->state)
-			goto end;
-
-		drm_atomic_crtc_state_for_each_plane_state(plane,
-							pstate, state) {
-			if ((pstate->crtc_h > mixer_height) ||
-					(pstate->crtc_w > mixer_width)) {
-				SDE_ERROR("plane w/h:%x*%x > mixer w/h:%x*%x\n",
-					pstate->crtc_w, pstate->crtc_h,
-					mixer_width, mixer_height);
-				return -E2BIG;
-				goto end;
-			}
-		}
-	}
-
 	_sde_crtc_setup_is_ppsplit(state);
 	_sde_crtc_setup_lm_bounds(crtc, state);
 
@@ -5371,10 +5401,17 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 				pstates[cnt].sde_pstate, PLANE_PROP_ZPOS);
 		pstates[cnt].pipe_id = sde_plane_pipe(plane);
 
+		/*
+		 * check for stages of dimlayer and planestate based on
+		 * has_base_layer property
+		 */
+		if (!kms->catalog->has_base_layer)
+			inc_sde_stage = SDE_STAGE_0;
+
 		/* check dim layer stage with every plane */
 		for (i = 0; i < cstate->num_dim_layers; i++) {
-			if (cstate->dim_layer[i].stage
-					== (pstates[cnt].stage + SDE_STAGE_0)) {
+			if (cstate->dim_layer[i].stage == (pstates[cnt].stage
+						+ inc_sde_stage)) {
 				SDE_ERROR(
 					"plane:%d/dim_layer:%i-same stage:%d\n",
 					plane->base.id, i,
@@ -5408,6 +5445,17 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 			rc = -E2BIG;
 			goto end;
 		}
+
+		if (cstate->num_ds_enabled &&
+			((pstate->crtc_h > mixer_height) ||
+			(pstate->crtc_w >
+			 (mixer_width * cstate->num_ds_enabled)))) {
+			SDE_ERROR("plane w/h:%x*%x > mixer w/h:%x*%x\n",
+				pstate->crtc_w, pstate->crtc_h,
+				mixer_width, mixer_height);
+			return -E2BIG;
+			goto end;
+		}
 	}
 
 	for (i = 1; i < SSPP_MAX; i++) {
@@ -5424,7 +5472,8 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 	}
 
 	/* assign mixer stages based on sorted zpos property */
-	sort(pstates, cnt, sizeof(pstates[0]), pstate_cmp, NULL);
+	if (cnt > 0)
+		sort(pstates, cnt, sizeof(pstates[0]), pstate_cmp, NULL);
 
 	rc = _sde_crtc_excl_dim_layer_check(state, pstates, cnt);
 	if (rc)
@@ -5476,7 +5525,10 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 			right_zpos_cnt++;
 		}
 
-		pstates[i].sde_pstate->stage = z_pos + SDE_STAGE_0;
+		if (!kms->catalog->has_base_layer)
+			pstates[i].sde_pstate->stage = z_pos + SDE_STAGE_0;
+		else
+			pstates[i].sde_pstate->stage = z_pos;
 		SDE_DEBUG("%s: zpos %d", sde_crtc->name, z_pos);
 	}
 
@@ -5811,6 +5863,9 @@ static void sde_crtc_install_properties(struct drm_crtc *crtc,
 		sde_kms_info_add_keyint(info, "ubwc_bw_calc_ver",
 				catalog->ubwc_bw_calc_version);
 
+	sde_kms_info_add_keyint(info, "use_baselayer_for_stage",
+				catalog->has_base_layer);
+
 	msm_property_set_blob(&sde_crtc->property_info, &sde_crtc->blob_info,
 			info->data, SDE_KMS_INFO_DATALEN(info), CRTC_PROP_INFO);
 
@@ -5929,7 +5984,7 @@ static int sde_crtc_atomic_set_property(struct drm_crtc *crtc,
 		_sde_crtc_set_input_fence_timeout(cstate);
 		break;
 	case CRTC_PROP_DIM_LAYER_V1:
-		_sde_crtc_set_dim_layer_v1(cstate,
+		_sde_crtc_set_dim_layer_v1(crtc, cstate,
 					(void __user *)(uintptr_t)val);
 		break;
 	case CRTC_PROP_ROI_V1:

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -67,6 +67,36 @@ enum cam_vfe_bus_ver2_vfe_out_type {
 	CAM_VFE_BUS_VER2_VFE_OUT_MAX,
 };
 
+struct cam_vfe_bus_ver2_dmi_lut_bank_info {
+	uint32_t size;
+	uint32_t bank_0;
+	uint32_t bank_1;
+};
+
+struct cam_vfe_bus_ver2_stats_cfg_offset {
+	uint32_t res_index;
+	uint32_t cfg_offset;
+	uint32_t num_cfg;
+	uint32_t cfg_size;
+	uint32_t is_lut;
+	struct cam_vfe_bus_ver2_dmi_lut_bank_info lut;
+};
+
+struct cam_vfe_bus_ver2_dmi_offset_common {
+	uint32_t auto_increment;
+	uint32_t cfg_offset;
+	uint32_t addr_offset;
+	uint32_t data_hi_offset;
+	uint32_t data_lo_offset;
+};
+
+struct cam_vfe_bus_ver2_stats_cfg_info {
+	struct cam_vfe_bus_ver2_dmi_offset_common
+		dmi_offset_info;
+	struct cam_vfe_bus_ver2_stats_cfg_offset
+		stats_cfg_offset[CAM_VFE_BUS_VER2_VFE_OUT_MAX];
+};
+
 /*
  * struct cam_vfe_bus_ver2_reg_offset_common:
  *
@@ -122,8 +152,6 @@ struct cam_vfe_bus_ver2_reg_offset_ubwc_3_client {
 	uint32_t mode_cfg_0;
 	uint32_t mode_cfg_1;
 	uint32_t bw_limit;
-	uint32_t threshlod_lossy_0;
-	uint32_t threshlod_lossy_1;
 };
 
 
@@ -177,19 +205,6 @@ struct cam_vfe_bus_ver2_vfe_out_hw_info {
 };
 
 /*
- * struct cam_vfe_bus_ver2_reg_data:
- *
- * @Brief:        Holds the bus register data
- */
-
-struct cam_vfe_bus_ver2_reg_data {
-	uint32_t      ubwc_10bit_threshold_lossy_0;
-	uint32_t      ubwc_10bit_threshold_lossy_1;
-	uint32_t      ubwc_8bit_threshold_lossy_0;
-	uint32_t      ubwc_8bit_threshold_lossy_1;
-};
-
-/*
  * struct cam_vfe_bus_ver2_hw_info:
  *
  * @Brief:            HW register info for entire Bus
@@ -198,7 +213,6 @@ struct cam_vfe_bus_ver2_reg_data {
  * @bus_client_reg:   Bus client register info
  * @comp_reg_grp:     Composite group register info
  * @vfe_out_hw_info:  VFE output capability
- * @reg_data:         bus register data;
  */
 struct cam_vfe_bus_ver2_hw_info {
 	struct cam_vfe_bus_ver2_reg_offset_common common_reg;
@@ -210,7 +224,7 @@ struct cam_vfe_bus_ver2_hw_info {
 	uint32_t num_out;
 	struct cam_vfe_bus_ver2_vfe_out_hw_info
 		vfe_out_hw_info[CAM_VFE_BUS_VER2_VFE_OUT_MAX];
-	struct cam_vfe_bus_ver2_reg_data  reg_data;
+	struct cam_vfe_bus_ver2_stats_cfg_info *stats_data;
 };
 
 /*

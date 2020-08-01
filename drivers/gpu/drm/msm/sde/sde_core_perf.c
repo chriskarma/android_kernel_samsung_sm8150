@@ -84,28 +84,6 @@ static bool _sde_core_perf_crtc_is_power_on(struct drm_crtc *crtc)
 	return sde_crtc_is_enabled(crtc);
 }
 
-static bool _sde_core_video_mode_intf_connected(struct drm_crtc *crtc)
-{
-	struct drm_crtc *tmp_crtc;
-	bool intf_connected = false;
-
-	if (!crtc)
-		goto end;
-
-	drm_for_each_crtc(tmp_crtc, crtc->dev) {
-		if ((sde_crtc_get_intf_mode(tmp_crtc) == INTF_MODE_VIDEO) &&
-				_sde_core_perf_crtc_is_power_on(tmp_crtc)) {
-			SDE_DEBUG("video interface connected crtc:%d\n",
-				tmp_crtc->base.id);
-			intf_connected = true;
-			goto end;
-		}
-	}
-
-end:
-	return intf_connected;
-}
-
 static void _sde_core_perf_calc_crtc(struct sde_kms *kms,
 		struct drm_crtc *crtc,
 		struct drm_crtc_state *state,
@@ -198,7 +176,6 @@ int sde_core_perf_crtc_check(struct drm_crtc *crtc,
 	u32 bw, threshold;
 	u64 bw_sum_of_intfs = 0;
 	enum sde_crtc_client_type curr_client_type;
-	bool is_video_mode;
 	struct sde_crtc_state *sde_cstate;
 	struct drm_crtc *tmp_crtc;
 	struct sde_kms *kms;
@@ -251,11 +228,7 @@ int sde_core_perf_crtc_check(struct drm_crtc *crtc,
 		bw = DIV_ROUND_UP_ULL(bw_sum_of_intfs, 1000);
 		SDE_DEBUG("calculated bandwidth=%uk\n", bw);
 
-		is_video_mode = sde_crtc_get_intf_mode(crtc) == INTF_MODE_VIDEO;
-		threshold = (is_video_mode ||
-			_sde_core_video_mode_intf_connected(crtc)) ?
-			kms->catalog->perf.max_bw_low :
-			kms->catalog->perf.max_bw_high;
+		threshold = kms->catalog->perf.max_bw_high;
 
 		SDE_DEBUG("final threshold bw limit = %d\n", threshold);
 
@@ -536,7 +509,21 @@ void sde_core_perf_crtc_update(struct drm_crtc *crtc,
 	old = &sde_crtc->cur_perf;
 	new = &sde_crtc->new_perf;
 
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	/* check only active crtc's request for mdp clock calculation (case 03876500, 03897887).
+	 * - Problem scenario.
+	 * 1) boot on dual display device, and turn on only main display.
+	 * So, main display crtc's bw_control = true, and sub display crtc's bw_control = false.
+	 * 2) After suspend -> resume, it save and restore whole crtcs to list.
+	 * 3) After resume, it calculate mdp clock while considering whole crtc's request.
+	 *    But, sub crtc's bw_control is false, and so, its mdp clock be set to maximum value...
+	 *    In result, it gets maximum mdp clock value due to sub crtc..
+	 * To prevent above issue, check only active crtc's request for mdp clock calculation
+	 */
+	if (_sde_core_perf_crtc_is_power_on(crtc) && !stop_req && crtc->state->active) {
+#else
 	if (_sde_core_perf_crtc_is_power_on(crtc) && !stop_req) {
+#endif
 		for (i = 0; i < SDE_POWER_HANDLE_DBUS_ID_MAX; i++) {
 			/*
 			 * cases for bus bandwidth update.

@@ -105,7 +105,16 @@
 #define SDE_NAME_SIZE  12
 
 /* timeout in frames waiting for frame done */
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+/* case 03134585
+ * sometimes, it is delayed for hundreds miliseconds
+ * to call sde_crtc_frame_event_work(), by scheduling.
+ * Set enough time for frame done timeout.
+ */
+#define SDE_FRAME_DONE_TIMEOUT	500
+#else
 #define SDE_FRAME_DONE_TIMEOUT	60
+#endif
 
 /* max active secure client counts allowed */
 #define MAX_ALLOWED_SECURE_CLIENT_CNT	1
@@ -672,5 +681,13 @@ void sde_kms_timeline_status(struct drm_device *dev);
  * return: 0 on success; error code otherwise
  */
 int sde_kms_handle_recovery(struct drm_encoder *encoder);
+
+/**
+ * sde_kms_release_splash_resource - release splash resource
+ * @sde_kms: poiner to sde_kms structure
+ * @crtc: crtc that splash resource to be released from
+ */
+void sde_kms_release_splash_resource(struct sde_kms *sde_kms,
+		struct drm_crtc *crtc);
 
 #endif /* __sde_kms_H__ */

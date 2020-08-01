@@ -269,21 +269,15 @@ static void gsi_rw_timer_func(unsigned long arg)
 static struct f_gsi *get_connected_gsi(void)
 {
 	struct f_gsi *connected_gsi;
-	bool gsi_connected = false;
 	int i;
 
-	for (i = 0; i < IPA_USB_MAX_TETH_PROT_SIZE; i++) {
+	for (i = 0; i < USB_PROT_MAX; i++) {
 		connected_gsi = __gsi[i];
-		if (connected_gsi && atomic_read(&connected_gsi->connected)) {
-			gsi_connected = true;
-			break;
-		}
+		if (connected_gsi && atomic_read(&connected_gsi->connected))
+			return connected_gsi;
 	}
 
-	if (!gsi_connected)
-		connected_gsi = NULL;
-
-	return connected_gsi;
+	return NULL;
 }
 
 #define DEFAULT_RW_TIMER_INTERVAL 500 /* in ms */
@@ -291,43 +285,50 @@ static ssize_t usb_gsi_rw_write(struct file *file,
 			const char __user *ubuf, size_t count, loff_t *ppos)
 {
 	struct f_gsi *gsi;
+	struct usb_function *func;
+	struct usb_gadget *gadget;
 	u8 input;
+	int i;
 	int ret;
 
-	gsi = get_connected_gsi();
-	if (!gsi) {
-		log_event_dbg("%s: gsi not connected\n", __func__);
-		goto err;
-	}
-
 	if (ubuf == NULL) {
-		log_event_dbg("%s: buffer is Null.\n", __func__);
+		pr_debug("%s: buffer is Null.\n", __func__);
 		goto err;
 	}
 
 	ret = kstrtou8_from_user(ubuf, count, 0, &input);
 	if (ret) {
-		log_event_err("%s: Invalid value. err:%d\n", __func__, ret);
+		pr_err("%s: Invalid value. err:%d\n", __func__, ret);
 		goto err;
 	}
 
-	if (gsi->debugfs_rw_timer_enable == !!input) {
-		if (!!input)
-			log_event_dbg("%s: RW already enabled\n", __func__);
-		else
-			log_event_dbg("%s: RW already disabled\n", __func__);
-		goto err;
-	}
 
-	gsi->debugfs_rw_timer_enable = !!input;
+	for (i = 0; i < USB_PROT_MAX; i++) {
+		gsi = __gsi[i];
+		if (gsi && atomic_read(&gsi->connected)) {
+			func = &gsi->function;
+			gadget = func->config->cdev->gadget;
+			gsi->debugfs_rw_timer_enable = !!input;
+			if (gadget->speed >= USB_SPEED_SUPER &&
+					!func->func_is_suspended) {
+				gsi->debugfs_rw_timer_enable = 0;
+				del_timer_sync(&gsi->gsi_rw_timer);
+				continue;
+			}
 
-	if (gsi->debugfs_rw_timer_enable) {
-		mod_timer(&gsi->gsi_rw_timer, jiffies +
-			  msecs_to_jiffies(gsi->gsi_rw_timer_interval));
-		log_event_dbg("%s: timer initialized\n", __func__);
-	} else {
-		del_timer_sync(&gsi->gsi_rw_timer);
-		log_event_dbg("%s: timer deleted\n", __func__);
+			if (gsi->debugfs_rw_timer_enable) {
+				mod_timer(&gsi->gsi_rw_timer, jiffies +
+				  msecs_to_jiffies(gsi->gsi_rw_timer_interval));
+				log_event_dbg("%s: timer initialized\n",
+								__func__);
+			} else {
+				del_timer_sync(&gsi->gsi_rw_timer);
+				log_event_dbg("%s: timer deleted\n", __func__);
+			}
+
+			if (gadget->speed < USB_SPEED_SUPER)
+				break;
+		}
 	}
 
 err:
@@ -338,14 +339,16 @@ static int usb_gsi_rw_show(struct seq_file *s, void *unused)
 {
 
 	struct f_gsi *gsi;
+	int i;
+	u8 enable = 0;
 
-	gsi = get_connected_gsi();
-	if (!gsi) {
-		log_event_dbg("%s: gsi not connected\n", __func__);
-		return 0;
+	for (i = 0; i < USB_PROT_MAX; i++) {
+		gsi = __gsi[i];
+		if (gsi && atomic_read(&gsi->connected))
+			enable |= gsi->debugfs_rw_timer_enable;
 	}
 
-	seq_printf(s, "%d\n", gsi->debugfs_rw_timer_enable);
+	seq_printf(s, "%d\n", enable);
 
 	return 0;
 }
@@ -369,31 +372,31 @@ static ssize_t usb_gsi_rw_timer_write(struct file *file,
 {
 	struct f_gsi *gsi;
 	u16 timer_val;
+	int i;
 	int ret;
 
-	gsi = get_connected_gsi();
-	if (!gsi) {
-		log_event_dbg("%s: gsi not connected\n", __func__);
-		goto err;
-	}
-
 	if (ubuf == NULL) {
-		log_event_dbg("%s: buffer is NULL.\n", __func__);
+		pr_debug("%s: buffer is NULL.\n", __func__);
 		goto err;
 	}
 
 	ret = kstrtou16_from_user(ubuf, count, 0, &timer_val);
 	if (ret) {
-		log_event_err("%s: Invalid value. err:%d\n", __func__, ret);
+		pr_err("%s: Invalid value. err:%d\n", __func__, ret);
 		goto err;
 	}
 
 	if (timer_val <= 0 || timer_val >  10000) {
-		log_event_err("%s: value must be > 0 and < 10000.\n", __func__);
+		pr_err("%s: value must be > 0 and < 10000.\n", __func__);
 		goto err;
 	}
 
-	gsi->gsi_rw_timer_interval = timer_val;
+	for (i = 0; i < USB_PROT_MAX; i++) {
+		gsi = __gsi[i];
+		if (gsi && atomic_read(&gsi->connected))
+			gsi->gsi_rw_timer_interval = timer_val;
+	}
+
 err:
 	return count;
 }
@@ -2956,17 +2959,25 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		rndis_set_param_medium(gsi->params, RNDIS_MEDIUM_802_3, 0);
 
 		/* export host's Ethernet address in CDC format */
+#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 		gsi_get_ether_addr(gsi_dev_addr,
 				   gsi->d_port.ipa_init_params.device_ethaddr);
 
 		gsi_get_ether_addr(gsi_host_addr,
 				   gsi->d_port.ipa_init_params.host_ethaddr);
-
 		log_event_dbg("setting host_ethaddr=%pM, device_ethaddr = %pM",
 				gsi->d_port.ipa_init_params.host_ethaddr,
 				gsi->d_port.ipa_init_params.device_ethaddr);
 		memcpy(gsi->ethaddr, &gsi->d_port.ipa_init_params.host_ethaddr,
 				ETH_ALEN);
+#else
+		random_ether_addr(gsi->d_port.ipa_init_params.device_ethaddr);
+		pr_info("%s MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", __func__,
+			gsi->ethaddr[0], gsi->ethaddr[1], gsi->ethaddr[2],
+			gsi->ethaddr[3], gsi->ethaddr[4], gsi->ethaddr[5]);
+		memcpy(&gsi->d_port.ipa_init_params.host_ethaddr, gsi->ethaddr,
+				ETH_ALEN);
+#endif
 		rndis_set_host_mac(gsi->params, gsi->ethaddr);
 
 		if (gsi->manufacturer && gsi->vendorID &&
@@ -3005,7 +3016,11 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		 * for windows7/windows10 to avoid data stall issues
 		 */
 		if (gsi->rndis_id == RNDIS_ID_UNKNOWN)
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+			gsi->rndis_id = WIRELESS_CONTROLLER_REMOTE_NDIS;
+#else
 			gsi->rndis_id = MISC_RNDIS_OVER_ETHERNET;
+#endif
 
 		switch (gsi->rndis_id) {
 		default:
@@ -3640,6 +3655,69 @@ static struct config_item_type gsi_func_rndis_type = {
 	.ct_owner	= THIS_MODULE,
 };
 
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+static ssize_t ethaddr_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct usb_function_instance *f = dev_get_drvdata(dev);
+	struct gsi_opts *opts = container_of(f, struct gsi_opts, func_inst);
+
+	return snprintf(buf, PAGE_SIZE, "%02x:%02x:%02x:%02x:%02x:%02x\n",
+		opts->gsi->ethaddr[0], opts->gsi->ethaddr[1], opts->gsi->ethaddr[2],
+		opts->gsi->ethaddr[3], opts->gsi->ethaddr[4], opts->gsi->ethaddr[5]);
+}
+
+static ssize_t ethaddr_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct usb_function_instance *f = dev_get_drvdata(dev);
+	struct gsi_opts *opts = container_of(f, struct gsi_opts, func_inst);
+
+	if (sscanf(buf, "%02x:%02x:%02x:%02x:%02x:%02x\n",
+		    (int *)&opts->gsi->ethaddr[0], (int *)&opts->gsi->ethaddr[1],
+		    (int *)&opts->gsi->ethaddr[2], (int *)&opts->gsi->ethaddr[3],
+		    (int *)&opts->gsi->ethaddr[4], (int *)&opts->gsi->ethaddr[5]) == 6)
+		return size;
+
+	return -EINVAL;
+}
+
+static DEVICE_ATTR(ethaddr, S_IRUGO | S_IWUSR, ethaddr_show, ethaddr_store);
+
+static struct device_attribute *rndis_function_attributes[] = {
+	&dev_attr_ethaddr,
+	NULL,
+};
+
+extern struct device *create_function_device(char *name);
+static int create_rndis_device(struct usb_function_instance *fi)
+{
+	struct device *dev;
+	struct device_attribute **attrs;
+	struct device_attribute *attr;
+	int err = 0;
+
+	dev = create_function_device("f_rndis");
+
+	if (IS_ERR(dev)) {
+		pr_info("%s : failed to create f_rndis device\n", __func__);
+		return PTR_ERR(dev);
+	}
+
+	attrs = rndis_function_attributes;
+	if (attrs) {
+		while ((attr = *attrs++) && !err)
+			err = device_create_file(dev, attr);
+		if (err) {
+			device_destroy(dev->class, dev->devt);
+			return -EINVAL;
+		}
+	}
+	dev_set_drvdata(dev, fi);
+	return 0;
+}
+#endif
+
 static int gsi_set_inst_name(struct usb_function_instance *fi,
 	const char *name)
 {
@@ -3676,6 +3754,15 @@ static int gsi_set_inst_name(struct usb_function_instance *fi,
 						&opts->func_inst.group, 1,
 						descs, names, THIS_MODULE);
 	}
+
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
+	if (prot_id == USB_PROT_RNDIS_IPA) {
+		if (create_rndis_device(&opts->func_inst)) {
+			pr_err("%s: failed to create device\n", __func__);
+			return -ENODEV;
+		}
+	}
+#endif
 
 	gsi = opts->gsi = __gsi[prot_id];
 	opts->gsi->prot_id = prot_id;

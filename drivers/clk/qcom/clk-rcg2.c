@@ -137,6 +137,10 @@ static int update_config(struct clk_rcg2 *rcg, u32 cfg)
 
 	WARN_CLK(hw->core, name, count == 0,
 			"rcg didn't update its configuration.");
+
+	if (!strcmp(name, "disp_cc_mdss_mdp_clk_src"))
+		disp_cc_dump_clocks();
+
 	return -EBUSY;
 }
 
@@ -262,6 +266,7 @@ clk_rcg2_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
 	const struct freq_tbl *f_curr;
 	u32 cfg, src, hid_div, m = 0, n = 0, mode = 0, mask;
+	unsigned long recalc_rate;
 
 	if (rcg->flags & DFS_ENABLE_RCG)
 		return rcg->current_freq;
@@ -305,7 +310,17 @@ clk_rcg2_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 		hid_div &= mask;
 	}
 
-	return clk_rcg2_calc_rate(parent_rate, m, n, mode, hid_div);
+
+	recalc_rate = clk_rcg2_calc_rate(parent_rate, m, n, mode, hid_div);
+
+	/*
+	 * Check the case when the RCG has been initialized to a non-CXO
+	 * frequency.
+	 */
+	if (rcg->enable_safe_config && !rcg->current_freq)
+		rcg->current_freq = recalc_rate;
+
+	return recalc_rate;
 }
 
 static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
@@ -463,7 +478,10 @@ static int clk_rcg2_configure(struct clk_rcg2 *rcg, const struct freq_tbl *f)
 	}
 
 	mask = BIT(rcg->hid_width) - 1;
-	mask |= CFG_SRC_SEL_MASK | CFG_MODE_MASK | CFG_HW_CLK_CTRL_MASK;
+	mask |= CFG_SRC_SEL_MASK | CFG_MODE_MASK;
+	if (!(rcg->flags & HW_CLK_CTRL_MODE))
+		mask |= CFG_HW_CLK_CTRL_MASK;
+
 	cfg = f->pre_div << CFG_SRC_DIV_SHIFT;
 	cfg |= rcg->parent_map[index].cfg << CFG_SRC_SEL_SHIFT;
 	if (rcg->mnd_width && f->n && (f->m != f->n))

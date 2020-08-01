@@ -220,6 +220,10 @@ static void diag_drain_apps_data(struct diag_apps_data_t *data)
 		return;
 
 	spin_lock_irqsave(&driver->diagmem_lock, flags);
+	if (data->flushed) {
+		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
+		return;
+	}
 	data->flushed = 1;
 	spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 	err = diag_mux_write(DIAG_LOCAL_PROC, data->buf, data->len,
@@ -1277,6 +1281,34 @@ static int mask_request_validate(unsigned char mask_buf[], int len)
 	return 0;
 }
 
+static void diag_md_session_dump(void)
+{
+      struct diag_md_session_t *session_info;
+      int i, j;
+
+      for (i = 0; i < NUM_DIAG_MD_DEV; i++) {
+	      for (j = 0; j < NUM_MD_SESSIONS; j++) {
+			session_info = driver->md_session_map[i][j];
+
+            if (!session_info)
+				continue;
+
+            if (session_info->task) {
+				DIAG_LOG(DIAG_DEBUG_USERSPACE, "diag: md dev : %d md session %d : "
+				 "pid : %d, task info [%s : pid %d tgid %d]\n",
+					i, j, session_info->pid,
+					session_info->task->comm,
+					session_info->task->pid,
+					session_info->task->tgid);
+            } else {
+				DIAG_LOG(DIAG_DEBUG_USERSPACE, "diag: md dev : %d md session %d : "
+				 "pid : %d, no task info\n",
+					i, j, session_info->pid);
+            }
+	      }
+	  }
+}
+
 static void diag_md_session_init(void)
 {
 	int i, proc;
@@ -1325,6 +1357,9 @@ int diag_md_session_create(int mode, int peripheral_mask, int proc)
 	int i;
 	int err = 0;
 	struct diag_md_session_t *new_session = NULL;
+
+	DIAG_LOG(DIAG_DEBUG_USERSPACE, "current task: %s [%d:%d]\n",
+				current->comm, current->pid, current->tgid);
 
 	/*
 	 * If a session is running with a peripheral mask and a new session
@@ -1409,6 +1444,7 @@ int diag_md_session_create(int mode, int peripheral_mask, int proc)
 	mutex_unlock(&driver->md_session_lock);
 	DIAG_LOG(DIAG_DEBUG_USERSPACE,
 		 "created session in peripheral mode\n");
+        diag_md_session_dump();
 	return 0;
 
 fail_peripheral:
@@ -1434,6 +1470,9 @@ static void diag_md_session_close(int pid)
 	uint8_t found = 0;
 	struct diag_md_session_t *session_info = NULL;
 	int proc;
+
+	DIAG_LOG(DIAG_DEBUG_USERSPACE,"current task: %s [%d:%d]\n",
+				current->comm, current->pid, current->tgid);
 
 	session_info = diag_md_session_get_pid(pid);
 	if (!session_info)
@@ -1473,6 +1512,7 @@ static void diag_md_session_close(int pid)
 	kfree(session_info);
 	session_info = NULL;
 	DIAG_LOG(DIAG_DEBUG_USERSPACE, "cleared up session\n");
+        diag_md_session_dump();
 }
 
 struct diag_md_session_t *diag_md_session_get_pid(int pid)
@@ -1490,6 +1530,12 @@ struct diag_md_session_t *diag_md_session_get_pid(int pid)
 				return driver->md_session_map[proc][i];
 		}
 	}
+	DIAG_LOG(DIAG_DEBUG_USERSPACE, "diag: no matching session : call "
+				"from: %pS: current task: %s [%d:%d]\n",
+				 __builtin_return_address(0),
+				 current->comm, current->pid, current->tgid);
+        diag_md_session_dump();
+
 	return NULL;
 }
 
@@ -3069,8 +3115,8 @@ static int diag_process_apps_data_hdlc(unsigned char *buf, int len,
 
 	wait_event_interruptible(driver->hdlc_wait_q,
 			(data->flushed == 0));
+	spin_lock_irqsave(&driver->diagmem_lock, flags);
 	if (!data->buf) {
-		spin_lock_irqsave(&driver->diagmem_lock, flags);
 		data->buf = diagmem_alloc(driver, DIAG_MAX_HDLC_BUF_SIZE +
 					APF_DIAG_PADDING,
 					  POOL_TYPE_HDLC);
@@ -3081,11 +3127,9 @@ static int diag_process_apps_data_hdlc(unsigned char *buf, int len,
 		}
 		data->allocated = 1;
 		data->flushed = 0;
-		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 	}
 
 	if ((DIAG_MAX_HDLC_BUF_SIZE - data->len) <= max_encoded_size) {
-		spin_lock_irqsave(&driver->diagmem_lock, flags);
 		data->flushed = 1;
 		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 		err = diag_mux_write(DIAG_LOCAL_PROC, data->buf, data->len,
@@ -3107,13 +3151,11 @@ static int diag_process_apps_data_hdlc(unsigned char *buf, int len,
 		}
 		data->allocated = 1;
 		data->flushed = 0;
-		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 	}
 
 	enc.dest = data->buf + data->len;
 	enc.dest_last = (void *)(data->buf + data->len + max_encoded_size);
 	diag_hdlc_encode(&send, &enc);
-
 	/*
 	 * This is to check if after HDLC encoding, we are still within
 	 * the limits of aggregation buffer. If not, we write out the
@@ -3122,7 +3164,6 @@ static int diag_process_apps_data_hdlc(unsigned char *buf, int len,
 	 */
 	if ((uintptr_t)enc.dest >= (uintptr_t)(data->buf +
 					       DIAG_MAX_HDLC_BUF_SIZE)) {
-		spin_lock_irqsave(&driver->diagmem_lock, flags);
 		data->flushed = 1;
 		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 		err = diag_mux_write(DIAG_LOCAL_PROC, data->buf, data->len,
@@ -3144,7 +3185,6 @@ static int diag_process_apps_data_hdlc(unsigned char *buf, int len,
 		}
 		data->allocated = 1;
 		data->flushed = 0;
-		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 
 		enc.dest = data->buf + data->len;
 		enc.dest_last = (void *)(data->buf + data->len +
@@ -3158,7 +3198,6 @@ static int diag_process_apps_data_hdlc(unsigned char *buf, int len,
 			DIAG_MAX_HDLC_BUF_SIZE;
 
 	if (pkt_type == DATA_TYPE_RESPONSE) {
-		spin_lock_irqsave(&driver->diagmem_lock, flags);
 		data->flushed = 1;
 		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 		err = diag_mux_write(DIAG_LOCAL_PROC, data->buf, data->len,
@@ -3167,8 +3206,9 @@ static int diag_process_apps_data_hdlc(unsigned char *buf, int len,
 			ret = -EIO;
 			goto fail_free_buf;
 		}
+		return PKT_ALLOC;
 	}
-
+	spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 	return PKT_ALLOC;
 
 fail_free_buf:
@@ -3206,8 +3246,8 @@ static int diag_process_apps_data_non_hdlc(unsigned char *buf, int len,
 	}
 	wait_event_interruptible(driver->hdlc_wait_q,
 			(data->flushed == 0));
+	spin_lock_irqsave(&driver->diagmem_lock, flags);
 	if (!data->buf) {
-		spin_lock_irqsave(&driver->diagmem_lock, flags);
 		data->buf = diagmem_alloc(driver, DIAG_MAX_HDLC_BUF_SIZE +
 					APF_DIAG_PADDING,
 					  POOL_TYPE_HDLC);
@@ -3218,10 +3258,8 @@ static int diag_process_apps_data_non_hdlc(unsigned char *buf, int len,
 		}
 		data->allocated = 1;
 		data->flushed = 0;
-		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 	}
 	if ((DIAG_MAX_HDLC_BUF_SIZE - data->len) <= max_pkt_size) {
-		spin_lock_irqsave(&driver->diagmem_lock, flags);
 		data->flushed = 1;
 		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 		err = diag_mux_write(DIAG_LOCAL_PROC, data->buf, data->len,
@@ -3244,7 +3282,6 @@ static int diag_process_apps_data_non_hdlc(unsigned char *buf, int len,
 		}
 		data->allocated = 1;
 		data->flushed = 0;
-		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 	}
 
 	header.start = CONTROL_CHAR;
@@ -3257,7 +3294,6 @@ static int diag_process_apps_data_non_hdlc(unsigned char *buf, int len,
 	*(uint8_t *)(data->buf + data->len) = CONTROL_CHAR;
 	data->len += sizeof(uint8_t);
 	if (pkt_type == DATA_TYPE_RESPONSE) {
-		spin_lock_irqsave(&driver->diagmem_lock, flags);
 		data->flushed = 1;
 		spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 		err = diag_mux_write(DIAG_LOCAL_PROC, data->buf, data->len,
@@ -3266,8 +3302,9 @@ static int diag_process_apps_data_non_hdlc(unsigned char *buf, int len,
 			ret = -EIO;
 			goto fail_free_buf;
 		}
+		return PKT_ALLOC;
 	}
-
+	spin_unlock_irqrestore(&driver->diagmem_lock, flags);
 	return PKT_ALLOC;
 
 fail_free_buf:
@@ -3708,9 +3745,12 @@ static ssize_t diagchar_read(struct file *file, char __user *buf, size_t count,
 	if (driver->data_ready[index] & MSG_MASKS_TYPE) {
 		/*Copy the type of data being passed*/
 		data_type = driver->data_ready[index] & MSG_MASKS_TYPE;
+		mutex_unlock(&driver->diagchar_mutex);
 		mutex_lock(&driver->md_session_lock);
 		session_info = diag_md_session_get_peripheral(DIAG_LOCAL_PROC,
 								APPS_DATA);
+		if (!session_info)
+			mutex_unlock(&driver->md_session_lock);
 		COPY_USER_SPACE_OR_ERR(buf, data_type, sizeof(int));
 		if (ret == -EFAULT) {
 			mutex_unlock(&driver->md_session_lock);
@@ -3718,9 +3758,11 @@ static ssize_t diagchar_read(struct file *file, char __user *buf, size_t count,
 		}
 		write_len = diag_copy_to_user_msg_mask(buf + ret, count,
 						       session_info);
-		mutex_unlock(&driver->md_session_lock);
+		if (session_info)
+			mutex_unlock(&driver->md_session_lock);
 		if (write_len > 0)
 			ret += write_len;
+		mutex_lock(&driver->diagchar_mutex);
 		driver->data_ready[index] ^= MSG_MASKS_TYPE;
 		atomic_dec(&driver->data_ready_notif[index]);
 		goto exit;
@@ -3729,6 +3771,7 @@ static ssize_t diagchar_read(struct file *file, char __user *buf, size_t count,
 	if (driver->data_ready[index] & EVENT_MASKS_TYPE) {
 		/*Copy the type of data being passed*/
 		data_type = driver->data_ready[index] & EVENT_MASKS_TYPE;
+		mutex_unlock(&driver->diagchar_mutex);
 		mutex_lock(&driver->md_session_lock);
 		session_info = diag_md_session_get_peripheral(DIAG_LOCAL_PROC,
 								APPS_DATA);
@@ -3756,6 +3799,7 @@ static ssize_t diagchar_read(struct file *file, char __user *buf, size_t count,
 			}
 		}
 		mutex_unlock(&driver->md_session_lock);
+		mutex_lock(&driver->diagchar_mutex);
 		driver->data_ready[index] ^= EVENT_MASKS_TYPE;
 		atomic_dec(&driver->data_ready_notif[index]);
 		goto exit;
@@ -3764,20 +3808,26 @@ static ssize_t diagchar_read(struct file *file, char __user *buf, size_t count,
 	if (driver->data_ready[index] & LOG_MASKS_TYPE) {
 		/*Copy the type of data being passed*/
 		data_type = driver->data_ready[index] & LOG_MASKS_TYPE;
+		mutex_unlock(&driver->diagchar_mutex);
 		mutex_lock(&driver->md_session_lock);
 		session_info = diag_md_session_get_peripheral(DIAG_LOCAL_PROC,
 								APPS_DATA);
+		if (!session_info)
+			mutex_unlock(&driver->md_session_lock);
 		COPY_USER_SPACE_OR_ERR(buf, data_type, sizeof(int));
 		if (ret == -EFAULT) {
-			mutex_unlock(&driver->md_session_lock);
+			if ((session_info))
+				mutex_unlock(&driver->md_session_lock);
 			goto exit;
 		}
 
 		write_len = diag_copy_to_user_log_mask(buf + ret, count,
 						       session_info);
-		mutex_unlock(&driver->md_session_lock);
+		if (session_info)
+			mutex_unlock(&driver->md_session_lock);
 		if (write_len > 0)
 			ret += write_len;
+		mutex_lock(&driver->diagchar_mutex);
 		driver->data_ready[index] ^= LOG_MASKS_TYPE;
 		atomic_dec(&driver->data_ready_notif[index]);
 		goto exit;
@@ -4424,7 +4474,7 @@ static int __init diagchar_init(void)
 	mutex_init(&driver->hdlc_recovery_mutex);
 	for (i = 0; i < NUM_PERIPHERALS; i++) {
 		mutex_init(&driver->diagfwd_channel_mutex[i]);
-		spin_lock_init(&driver->rpmsginfo_lock[i]);
+		mutex_init(&driver->rpmsginfo_mutex[i]);
 		driver->diag_id_sent[i] = 0;
 	}
 	init_waitqueue_head(&driver->wait_q);

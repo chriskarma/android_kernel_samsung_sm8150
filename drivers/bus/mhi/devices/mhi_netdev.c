@@ -810,6 +810,13 @@ static void mhi_netdev_xfer_dl_cb(struct mhi_device *mhi_dev,
 	ndev->stats.rx_packets++;
 	ndev->stats.rx_bytes += mhi_result->bytes_xferd;
 
+#if defined(CONFIG_ARGOS)
+	if (mhi_netdev->chain_skb == false) {
+		mhi_netdev_push_skb(mhi_netdev, mhi_buf, mhi_result);
+		return;
+	}
+#endif
+
 	if (unlikely(!chain)) {
 		mhi_netdev_push_skb(mhi_netdev, mhi_buf, mhi_result);
 		return;
@@ -875,6 +882,44 @@ static const struct file_operations debugfs_stats = {
 	.read = seq_read,
 };
 
+static int mhi_netdev_debugfs_chain(void *data, u64 val)
+{
+	struct mhi_netdev *mhi_netdev = data;
+	struct mhi_netdev *rsc_dev = mhi_netdev->rsc_dev;
+
+	mhi_netdev->chain = NULL;
+
+	if (rsc_dev)
+		rsc_dev->chain = NULL;
+
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(debugfs_chain, NULL,
+			 mhi_netdev_debugfs_chain, "%llu\n");
+
+#if defined(CONFIG_ARGOS)
+void mhi_set_napi_chained_rx(struct net_device *dev, bool enable) 
+{
+	struct mhi_netdev_priv *mhi_netdev_priv = netdev_priv(dev);
+	struct mhi_netdev *mhi_netdev = mhi_netdev_priv->mhi_netdev;
+	struct mhi_netdev *rsc_dev = mhi_netdev->rsc_dev;
+	
+	if (enable) {
+		pr_info("%s enabled\n", __func__);
+		mhi_netdev->chain_skb = true;
+		if (rsc_dev)
+			rsc_dev->chain_skb = true;
+	} else {
+		pr_info("%s disabled\n", __func__);
+		mhi_netdev->chain_skb = false;
+		if (rsc_dev)
+			rsc_dev->chain_skb = false;
+	}
+}
+EXPORT_SYMBOL(mhi_set_napi_chained_rx);
+#endif
+
 static void mhi_netdev_create_debugfs(struct mhi_netdev *mhi_netdev)
 {
 	char node_name[32];
@@ -894,6 +939,8 @@ static void mhi_netdev_create_debugfs(struct mhi_netdev *mhi_netdev)
 
 	debugfs_create_file_unsafe("stats", 0444, mhi_netdev->dentry,
 				   mhi_netdev, &debugfs_stats);
+	debugfs_create_file_unsafe("chain", 0444, mhi_netdev->dentry,
+				   mhi_netdev, &debugfs_chain);
 }
 
 static void mhi_netdev_create_debugfs_dir(void)

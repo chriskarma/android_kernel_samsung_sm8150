@@ -83,8 +83,7 @@ static int cam_lrme_mgr_util_get_device(struct cam_lrme_hw_mgr *hw_mgr,
 	return 0;
 }
 
-static int cam_lrme_mgr_util_packet_validate(struct cam_packet *packet,
-	size_t remain_len)
+static int cam_lrme_mgr_util_packet_validate(struct cam_packet *packet)
 {
 	struct cam_cmd_buf_desc *cmd_desc = NULL;
 	int i, rc;
@@ -106,7 +105,7 @@ static int cam_lrme_mgr_util_packet_validate(struct cam_packet *packet,
 		packet->patch_offset, packet->num_patches,
 		packet->kmd_cmd_buf_offset, packet->kmd_cmd_buf_index);
 
-	if (cam_packet_util_validate_packet(packet, remain_len)) {
+	if (cam_packet_util_validate_packet(packet)) {
 		CAM_ERR(CAM_LRME, "invalid packet:%d %d %d %d %d",
 			packet->kmd_cmd_buf_index,
 			packet->num_cmd_buf, packet->cmd_buf_offset,
@@ -178,12 +177,6 @@ static int cam_lrme_mgr_util_prepare_io_buffer(int32_t iommu_hdl,
 				CAM_ERR(CAM_LRME, "Cannot get io buf for %d %d",
 					plane, rc);
 				return -ENOMEM;
-			}
-
-			if ((size_t)io_cfg[i].offsets[plane] >= size) {
-				CAM_ERR(CAM_LRME, "Invalid plane offset: %zu",
-					(size_t)io_cfg[i].offsets[plane]);
-				return -EINVAL;
 			}
 
 			io_addr[plane] += io_cfg[i].offsets[plane];
@@ -429,7 +422,8 @@ static int cam_lrme_mgr_util_submit_req(void *priv, void *data)
 			CAM_DBG(CAM_LRME, "device busy");
 		else if (rc)
 			CAM_ERR(CAM_LRME, "submit request failed rc %d", rc);
-		if (rc) {
+
+		if (rc == -EBUSY) {
 			req_prio == 0 ? spin_lock(&hw_device->high_req_lock) :
 				spin_lock(&hw_device->normal_req_lock);
 			list_add(&frame_req->frame_list,
@@ -438,9 +432,9 @@ static int cam_lrme_mgr_util_submit_req(void *priv, void *data)
 				 &hw_device->frame_pending_list_normal));
 			req_prio == 0 ? spin_unlock(&hw_device->high_req_lock) :
 				spin_unlock(&hw_device->normal_req_lock);
-		}
-		if (rc == -EBUSY)
 			rc = 0;
+		}
+			
 	} else {
 		req_prio == 0 ? spin_lock(&hw_device->high_req_lock) :
 			spin_lock(&hw_device->normal_req_lock);
@@ -853,7 +847,7 @@ static int cam_lrme_mgr_hw_prepare_update(void *hw_mgr_priv,
 		goto error;
 	}
 
-	rc = cam_lrme_mgr_util_packet_validate(args->packet, args->remain_len);
+	rc = cam_lrme_mgr_util_packet_validate(args->packet);
 	if (rc) {
 		CAM_ERR(CAM_LRME, "Error in packet validation %d", rc);
 		goto error;
@@ -871,8 +865,7 @@ static int cam_lrme_mgr_hw_prepare_update(void *hw_mgr_priv,
 		kmd_buf.size, kmd_buf.used_bytes);
 
 	rc = cam_packet_util_process_patches(args->packet,
-		hw_mgr->device_iommu.non_secure,
-		hw_mgr->device_iommu.secure, 0);
+		hw_mgr->device_iommu.non_secure, hw_mgr->device_iommu.secure);
 	if (rc) {
 		CAM_ERR(CAM_LRME, "Patch packet failed, rc=%d", rc);
 		return rc;

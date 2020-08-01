@@ -131,7 +131,6 @@ static void dsi_phy_hw_v4_0_lane_settings(struct dsi_phy_hw *phy,
 		 * to the logical data lane 0
 		 */
 		DSI_W32(phy, DSIPHY_LNX_LPRX_CTRL(i), 0);
-		DSI_W32(phy, DSIPHY_LNX_PIN_SWAP(i), 0x0);
 	}
 	dsi_phy_hw_v4_0_config_lpcdrx(phy, cfg, true);
 
@@ -141,6 +140,8 @@ static void dsi_phy_hw_v4_0_lane_settings(struct dsi_phy_hw *phy,
 		DSI_W32(phy, DSIPHY_LNX_CFG1(i), cfg->lanecfg.lane[i][1]);
 		DSI_W32(phy, DSIPHY_LNX_CFG2(i), cfg->lanecfg.lane[i][2]);
 		DSI_W32(phy, DSIPHY_LNX_TX_DCTRL(i), tx_dctrl[i]);
+		DSI_W32(phy, DSIPHY_LNX_PIN_SWAP(i),
+					(cfg->lane_pnswap >> i) & 0x1);
 	}
 
 }
@@ -459,8 +460,11 @@ int dsi_phy_hw_timing_val_v4_0(struct dsi_phy_per_lane_cfgs *timing_cfg,
 		return -EINVAL;
 	}
 
-	for (i = 0; i < size; i++)
+	for (i = 0; i < size; i++) {
 		timing_cfg->lane_v4[i] = timing_val[i];
+		// KR_TEMP
+		pr_err("%s : [%d] %x \n", __func__, i, timing_val[i]);
+	}
 	return 0;
 }
 

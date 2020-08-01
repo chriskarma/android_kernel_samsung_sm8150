@@ -21,6 +21,9 @@
 #include "sde_hw_catalog.h"
 #include "sde_hw_catalog_format.h"
 #include "sde_kms.h"
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+#include "ss_dsi_panel_common.h"
+#endif
 
 /*************************************************************
  * MACRO DEFINITION
@@ -172,6 +175,7 @@ enum sde_prop {
 	PIPE_ORDER_VERSION,
 	SEC_SID_MASK,
 	LINE_INSERTION,
+	BASE_LAYER,
 	SDE_PROP_MAX,
 };
 
@@ -461,6 +465,7 @@ static struct sde_prop_type sde_prop[] = {
 			PROP_TYPE_U32},
 	{SEC_SID_MASK, "qcom,sde-secure-sid-mask", false, PROP_TYPE_U32_ARRAY},
 	{LINE_INSERTION, "qcom,sde-has-line-insertion", false, PROP_TYPE_BOOL},
+	{BASE_LAYER, "qcom,sde-mixer-stage-base-layer", false, PROP_TYPE_BOOL},
 };
 
 static struct sde_prop_type sde_perf_prop[] = {
@@ -3100,6 +3105,7 @@ static int sde_parse_dt(struct device_node *np, struct sde_mdss_cfg *cfg)
 		PIPE_ORDER_VERSION, 0);
 	cfg->has_line_insertion = PROP_VALUE_ACCESS(prop_value,
 		LINE_INSERTION, 0);
+	cfg->has_base_layer = PROP_VALUE_ACCESS(prop_value, BASE_LAYER, 0);
 end:
 	kfree(prop_value);
 	return rc;
@@ -3952,6 +3958,33 @@ struct sde_mdss_cfg *sde_hw_catalog_init(struct drm_device *dev, u32 hw_rev)
 	rc = sde_parse_dt(np, sde_cfg);
 	if (rc)
 		goto end;
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	{
+		/* sde_hw_catalog_init() be called once for dual dsi,
+		 * and two vdds share same sde_kms pointer.
+		 * get sde_kms from primary vdd, then call ss_callback
+		 * for primary and secondary vdd, respectively.
+		 */
+		struct samsung_display_driver_data *vdd = ss_get_vdd(PRIMARY_DISPLAY_NDX);
+		struct sde_kms *sde_kms = NULL;
+
+		if (IS_ERR_OR_NULL(vdd))
+			goto done;
+
+		sde_kms = GET_SDE_KMS(vdd);
+
+		if (IS_ERR_OR_NULL(sde_kms) ||
+				IS_ERR_OR_NULL(sde_kms->base.funcs->ss_callback))
+			goto done;
+
+		sde_kms->base.funcs->ss_callback(PRIMARY_DISPLAY_NDX,
+				SS_EVENT_SDE_HW_CATALOG_INIT, (void *)sde_cfg);
+		sde_kms->base.funcs->ss_callback(SECONDARY_DISPLAY_NDX,
+				SS_EVENT_SDE_HW_CATALOG_INIT, (void *)sde_cfg);
+	}
+done:
+#endif
 
 	rc = sde_perf_parse_dt(np, sde_cfg);
 	if (rc)

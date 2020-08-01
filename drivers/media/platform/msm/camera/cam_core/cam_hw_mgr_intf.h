@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -144,18 +144,15 @@ struct cam_hw_stop_args {
  * struct cam_hw_mgr_dump_pf_data - page fault debug data
  *
  * packet:     pointer to packet
- * ctx_id:     context id
  */
 struct cam_hw_mgr_dump_pf_data {
 	void    *packet;
-	uint32_t ctx_id;
 };
 
 /**
  * struct cam_hw_prepare_update_args - Payload for prepare command
  *
  * @packet:                CSL packet from user mode driver
- * @remain_len             Remaining length of CPU buffer after config offset
  * @ctxt_to_hw_map:        HW context from the acquire
  * @max_hw_update_entries: Maximum hardware update entries supported
  * @hw_update_entries:     Actual hardware update configuration (returned)
@@ -172,7 +169,6 @@ struct cam_hw_mgr_dump_pf_data {
  */
 struct cam_hw_prepare_update_args {
 	struct cam_packet              *packet;
-	size_t                          remain_len;
 	void                           *ctxt_to_hw_map;
 	uint32_t                        max_hw_update_entries;
 	struct cam_hw_update_entry     *hw_update_entries;
@@ -211,6 +207,7 @@ struct cam_hw_stream_setttings {
  * @num_out_map_entries:   Number of out map entries
  * @priv:                  Private pointer
  * @request_id:            Request ID
+ * @reapply                True if reapplying after bubble
  *
  */
 struct cam_hw_config_args {
@@ -222,6 +219,7 @@ struct cam_hw_config_args {
 	void                           *priv;
 	uint64_t                        request_id;
 	bool                            init_packet;
+	bool                            reapply;
 };
 
 /**
@@ -263,11 +261,9 @@ struct cam_hw_dump_pf_args {
 };
 
 /**
- * struct cam_hw_reset_args -hw reset arguments
- *
- * @ctxt_to_hw_map:        HW context from the acquire
- *
- */
+* struct cam_hw_reset_args -hw reset arguments+ *
+* @ctxt_to_hw_map:        HW context from the acquire+ *
+*/
 struct cam_hw_reset_args {
 	void                           *ctxt_to_hw_map;
 };
@@ -323,7 +319,7 @@ struct cam_hw_cmd_args {
  * @hw_open:                   Function pointer for HW init
  * @hw_close:                  Function pointer for HW deinit
  * @hw_flush:                  Function pointer for HW flush
- * @hw_reset:                  Function pointer for HW reset
+ * @hw_reset:                  Function pointer for HW reset 
  *
  */
 struct cam_hw_mgr_intf {
@@ -344,7 +340,7 @@ struct cam_hw_mgr_intf {
 	int (*hw_open)(void *hw_priv, void *fw_download_args);
 	int (*hw_close)(void *hw_priv, void *hw_close_args);
 	int (*hw_flush)(void *hw_priv, void *hw_flush_args);
-	int (*hw_reset)(void *hw_priv, void *hw_reset_args);
+	int (*hw_reset)(void *hw_priv, void *hw_reset_args);	
 };
 
 #endif /* _CAM_HW_MGR_INTF_H_ */

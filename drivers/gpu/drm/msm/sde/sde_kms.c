@@ -19,6 +19,7 @@
 #define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 
 #include <drm/drm_crtc.h>
+#include <drm/drm_fixed.h>
 #include <linux/debugfs.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -51,6 +52,10 @@
 
 #define CREATE_TRACE_POINTS
 #include "sde_trace.h"
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+#include <linux/sec_debug.h>
+#endif
 
 /* defines for secure channel call */
 #define MEM_PROTECT_SD_CTRL_SWITCH 0x18
@@ -832,13 +837,21 @@ static int _sde_kms_release_splash_buffer(unsigned int mem_addr,
 		return -EINVAL;
 	}
 
+#if defined(CONFIG_DISPLAY_SAMSUNG) && defined(CONFIG_SEC_DEBUG)
+	if (sec_debug_is_enabled()) {
+		pr_info("skip to free splash memory\n");
+		return 0;
+	}
+#endif
+
+#if !defined(CONFIG_DISPLAY_SAMSUNG)
 	/* leave ramdump memory only if base address matches */
 	if (ramdump_base == mem_addr &&
 			ramdump_buffer_size <= splash_buffer_size) {
 		mem_addr +=  ramdump_buffer_size;
 		splash_buffer_size -= ramdump_buffer_size;
 	}
-
+#endif
 	pfn_start = mem_addr >> PAGE_SHIFT;
 	pfn_end = (mem_addr + splash_buffer_size) >> PAGE_SHIFT;
 
@@ -847,6 +860,7 @@ static int _sde_kms_release_splash_buffer(unsigned int mem_addr,
 		SDE_ERROR("continuous splash memory free failed:%d\n", ret);
 		return ret;
 	}
+	free_memsize_reserved(mem_addr, splash_buffer_size);
 	for (pfn_idx = pfn_start; pfn_idx < pfn_end; pfn_idx++)
 		free_reserved_page(pfn_to_page(pfn_idx));
 
@@ -1054,7 +1068,7 @@ static void sde_kms_commit(struct msm_kms *kms,
 	SDE_ATRACE_END("sde_kms_commit");
 }
 
-static void _sde_kms_release_splash_resource(struct sde_kms *sde_kms,
+void sde_kms_release_splash_resource(struct sde_kms *sde_kms,
 		struct drm_crtc *crtc)
 {
 	struct msm_drm_private *priv;
@@ -1117,6 +1131,8 @@ static void sde_kms_complete_commit(struct msm_kms *kms,
 	struct drm_crtc_state *old_crtc_state;
 	struct drm_connector *connector;
 	struct drm_connector_state *old_conn_state;
+	struct msm_display_conn_params params;
+
 	int i, rc = 0;
 
 	if (!kms || !old_state)
@@ -1148,7 +1164,18 @@ static void sde_kms_complete_commit(struct msm_kms *kms,
 		c_conn = to_sde_connector(connector);
 		if (!c_conn->ops.post_kickoff)
 			continue;
-		rc = c_conn->ops.post_kickoff(connector);
+
+		memset(&params, 0, sizeof(params));
+
+		if (c_conn->qsync_updated &&
+			(c_conn->qsync_mode == SDE_RM_QSYNC_ONE_SHOT_MODE)) {
+			/* Reset qsync states if mode is one shot */
+			params.qsync_mode = c_conn->qsync_mode = 0;
+			params.qsync_update = true;
+			SDE_EVT32(connector->base.id, c_conn->qsync_mode);
+		}
+
+		rc = c_conn->ops.post_kickoff(connector, &params);
 		if (rc) {
 			pr_err("Connector Post kickoff failed rc=%d\n",
 					 rc);
@@ -1158,7 +1185,7 @@ static void sde_kms_complete_commit(struct msm_kms *kms,
 	sde_power_resource_enable(&priv->phandle, sde_kms->core_client, false);
 
 	for_each_crtc_in_state(old_state, crtc, old_crtc_state, i)
-		_sde_kms_release_splash_resource(sde_kms, crtc);
+		sde_kms_release_splash_resource(sde_kms, crtc);
 
 	SDE_EVT32_VERBOSE(SDE_EVTLOG_FUNC_EXIT);
 	SDE_ATRACE_END("sde_kms_complete_commit");
@@ -1349,6 +1376,8 @@ static void _sde_kms_release_displays(struct sde_kms *sde_kms)
 	sde_kms->dsi_display_count = 0;
 }
 
+// KR :  No sde_kms_check_status_init ??
+
 /**
  * _sde_kms_setup_displays - create encoders, bridges and connectors
  *                           for underlying displays
@@ -1381,6 +1410,7 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.cmd_transfer = dsi_display_cmd_transfer,
 		.cont_splash_config = dsi_display_cont_splash_config,
 		.get_panel_vfp = dsi_display_get_panel_vfp,
+		.prepare_commit = dsi_conn_prepare_commit,
 	};
 	static const struct sde_connector_ops wb_ops = {
 		.post_init =    sde_wb_connector_post_init,
@@ -1527,6 +1557,7 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 			sde_encoder_destroy(encoder);
 		}
 	}
+
 	/* dp */
 	for (i = 0; i < sde_kms->dp_display_count &&
 			priv->num_encoders < max_encoders; ++i) {
@@ -1573,6 +1604,7 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 
 		/* update display cap to MST_MODE for DP MST encoders */
 		info.capabilities |= MSM_DISPLAY_CAP_MST_MODE;
+		sde_kms->dp_stream_count = dp_display_get_num_of_streams();
 		for (idx = 0; idx < sde_kms->dp_stream_count; idx++) {
 			info.h_tile_instance[0] = idx;
 			encoder = sde_encoder_init(dev, &info);
@@ -2631,6 +2663,53 @@ static bool sde_kms_check_for_splash(struct msm_kms *kms)
 	return sde_kms->splash_data.num_splash_displays;
 }
 
+static int sde_kms_get_mixer_count(const struct msm_kms *kms,
+		const struct drm_display_mode *mode,
+		u32 max_mixer_width, u32 *num_lm)
+{
+	struct sde_kms *sde_kms;
+	s64 mode_clock_hz = 0;
+	s64 max_mdp_clock_hz = 0;
+	s64 mdp_fudge_factor = 0;
+	s64 temp = 0;
+	s64 htotal_fp = 0;
+	s64 vtotal_fp = 0;
+	s64 vrefresh_fp = 0;
+
+	if (!num_lm) {
+		SDE_ERROR("invalid num_lm pointer\n");
+		return -EINVAL;
+	}
+	*num_lm = 1;
+
+	if (!kms || !mode || !max_mixer_width) {
+		SDE_ERROR("invlaid input args");
+		return -EINVAL;
+	}
+
+	sde_kms = to_sde_kms(kms);
+
+	max_mdp_clock_hz = drm_fixp_from_fraction(
+			sde_kms->perf.max_core_clk_rate, 1);
+	mdp_fudge_factor = drm_fixp_from_fraction(105, 100);
+	htotal_fp = drm_fixp_from_fraction(mode->htotal, 1);
+	vtotal_fp =  drm_fixp_from_fraction(mode->vtotal, 1);
+	vrefresh_fp =  drm_fixp_from_fraction(mode->vrefresh, 1);
+
+	temp = drm_fixp_mul(htotal_fp, vtotal_fp);
+	temp = drm_fixp_mul(temp, vrefresh_fp);
+	mode_clock_hz = drm_fixp_mul(temp, mdp_fudge_factor);
+
+	if (mode_clock_hz > max_mdp_clock_hz ||
+			mode->hdisplay > max_mixer_width)
+		*num_lm = 2;
+
+	SDE_DEBUG("[%s] h=%d, v=%d, fps%d, max_mdp_pclk_hz=%llu, num_lm=%d\n",
+			mode->name, mode->htotal, mode->vtotal, mode->vrefresh,
+			sde_kms->perf.max_core_clk_rate, *num_lm);
+	return 0;
+}
+
 static void _sde_kms_null_commit(struct drm_device *dev,
 		struct drm_encoder *enc)
 {
@@ -2893,8 +2972,10 @@ retry:
 			drm_modeset_backoff(&ctx);
 		}
 
-		if (ret < 0)
+		if (ret < 0) {
 			DRM_ERROR("failed to restore state, %d\n", ret);
+			SDE_DBG_DUMP("all", "dbg_bus", "vbif_dbg_bus", "panic");
+		}
 
 		drm_atomic_state_put(sde_kms->suspend_state);
 		sde_kms->suspend_state = NULL;
@@ -2909,6 +2990,11 @@ end:
 
 	return 0;
 }
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+extern int ss_dsi_panel_event_handler(
+		int display_ndx, enum mdss_intf_events event, void *arg);
+#endif
 
 static const struct msm_kms_funcs kms_funcs = {
 	.hw_init         = sde_kms_hw_init,
@@ -2939,6 +3025,11 @@ static const struct msm_kms_funcs kms_funcs = {
 	.get_address_space = _sde_kms_get_address_space,
 	.postopen = _sde_kms_post_open,
 	.check_for_splash = sde_kms_check_for_splash,
+	.get_mixer_count = sde_kms_get_mixer_count,
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	.ss_callback	= ss_dsi_panel_event_handler,
+#endif
 };
 
 /* the caller api needs to turn on clock before calling it */

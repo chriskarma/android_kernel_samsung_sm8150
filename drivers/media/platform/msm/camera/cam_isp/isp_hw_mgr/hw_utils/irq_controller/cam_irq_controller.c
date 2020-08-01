@@ -612,15 +612,15 @@ static void cam_irq_controller_th_processing(
 		irq_bh_api = &evt_handler->irq_bh_api;
 		bh_cmd = NULL;
 
-		if (evt_handler->bottom_half_handler) {
-			rc = irq_bh_api->get_bh_payload_func(
-				evt_handler->bottom_half, &bh_cmd);
-			if (rc || !bh_cmd) {
-				CAM_ERR_RATE_LIMIT(CAM_ISP,
-					"No payload, IRQ handling frozen");
-				continue;
-			}
-		}
+        if (evt_handler->bottom_half_handler) {
+            rc = irq_bh_api->get_bh_payload_func(
+                evt_handler->bottom_half, &bh_cmd);
+            if (rc || !bh_cmd) {
+                CAM_ERR_RATE_LIMIT(CAM_ISP,
+                "rc=%d, No payload, IRQ handling frozen", rc);
+                continue;
+            }
+        }
 
 		/*
 		 * irq_status_arr[0] is dummy argument passed. the entire

@@ -25,7 +25,8 @@
 #include "rmnet_descriptor.h"
 #include <soc/qcom/rmnet_qmi.h>
 #include <soc/qcom/qmi_rmnet.h>
-
+#include <linux/proc_fs.h>
+ 
 /* Locking scheme -
  * The shared resource which needs to be protected is realdev->rx_handler_data.
  * For the writer path, this is using rtnl_lock(). The writer paths are
@@ -263,9 +264,9 @@ static void rmnet_dellink(struct net_device *dev, struct list_head *head)
 	if (!port->nr_rmnet_devs)
 		qmi_rmnet_qmi_exit(port->qmi_info, port);
 
-	rmnet_unregister_real_device(real_dev, port);
+	unregister_netdevice(dev);
 
-	unregister_netdevice_queue(dev, head);
+	rmnet_unregister_real_device(real_dev, port);
 }
 
 static void rmnet_force_unassociate_device(struct net_device *dev)
@@ -295,7 +296,9 @@ static void rmnet_force_unassociate_device(struct net_device *dev)
 		synchronize_rcu();
 		kfree(ep);
 	}
-
+	/* Unregistering devices in context before freeing port.
+	 * If this API becomes non-context their order should switch.
+	 */
 	unregister_netdevice_many(&list);
 
 	rmnet_unregister_real_device(real_dev, port);
@@ -397,14 +400,13 @@ static int rmnet_changelink(struct net_device *dev, struct nlattr *tb[],
 	}
 
 	if (data[IFLA_RMNET_UL_AGG_PARAMS]) {
-		void *agg_params;
-		unsigned long irq_flags;
+		struct rmnet_egress_agg_params *agg_params;
 
 		agg_params = nla_data(data[IFLA_RMNET_UL_AGG_PARAMS]);
-		spin_lock_irqsave(&port->agg_lock, irq_flags);
-		memcpy(&port->egress_agg_params, agg_params,
-		       sizeof(port->egress_agg_params));
-		spin_unlock_irqrestore(&port->agg_lock, irq_flags);
+		rmnet_map_update_ul_agg_config(port, agg_params->agg_size,
+					       agg_params->agg_count,
+					       agg_params->agg_features,
+					       agg_params->agg_time);
 	}
 
 	return 0;
@@ -704,6 +706,69 @@ int rmnet_get_powersave_notif(void *port)
 	return ((struct rmnet_port *)port)->data_format & RMNET_FORMAT_PS_NOTIF;
 }
 EXPORT_SYMBOL(rmnet_get_powersave_notif);
+
+struct net_device *rmnet_get_real_dev(void *port)
+{
+	if (port)
+		return ((struct rmnet_port *)port)->dev;
+
+	return NULL;
+}
+EXPORT_SYMBOL(rmnet_get_real_dev);
+
+#endif
+
+#if defined(CONFIG_ARGOS)
+#define PROC_BUFSIZE 20
+
+static ssize_t rmnet_set_dl_flush_count(struct file *file,
+					const char __user *ubuf,
+					size_t count, loff_t *ppos)
+{
+	char buf[PROC_BUFSIZE];
+	u32 val;
+
+	if (*ppos > 0 || count > PROC_BUFSIZE)
+		return -EFAULT;
+
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+
+	if (kstrtou32(buf, 0, &val))
+		return -EFAULT;
+
+	if (val < 0 || val > 16)
+		return -EINVAL;
+
+	config_flushcount = val;
+	pr_err("%s count:%d\n", __func__, config_flushcount);
+	*ppos = strlen(buf);
+	return *ppos;
+}
+
+static ssize_t rmnet_get_dl_flush_count(struct file *file,
+					char __user *ubuf,
+					size_t count, loff_t *ppos)
+{
+	char buf[PROC_BUFSIZE];
+	int len = 0;
+
+	if (*ppos > 0 || count < PROC_BUFSIZE)
+		return 0;
+	len += snprintf(buf, PROC_BUFSIZE, "%d\n", config_flushcount);
+
+	if (copy_to_user(ubuf, buf, len))
+		return -EFAULT;
+	pr_err("%s count:%d\n",  __func__, config_flushcount);
+	*ppos = len;
+	return len;
+}
+
+static const struct file_operations rmnet_fops = {
+	.owner		= THIS_MODULE,
+	.read		= rmnet_get_dl_flush_count,
+	.write		= rmnet_set_dl_flush_count,
+};
 #endif
 
 /* Startup/Shutdown */
@@ -721,6 +786,18 @@ static int __init rmnet_init(void)
 		unregister_netdevice_notifier(&rmnet_dev_notifier);
 		return rc;
 	}
+	
+#if defined(CONFIG_ARGOS) 
+{
+	struct proc_dir_entry *pde;
+
+	/* default gro flush count*/
+	config_flushcount = 2;
+	pde = proc_create("rmnet_flush_count", 0444, NULL, &rmnet_fops);
+	if (!pde)
+		return -ENOMEM;
+}
+#endif
 	return rc;
 }
 
@@ -728,6 +805,7 @@ static void __exit rmnet_exit(void)
 {
 	unregister_netdevice_notifier(&rmnet_dev_notifier);
 	rtnl_link_unregister(&rmnet_link_ops);
+	remove_proc_entry("rmnet_flush_count", NULL);
 }
 
 module_init(rmnet_init)

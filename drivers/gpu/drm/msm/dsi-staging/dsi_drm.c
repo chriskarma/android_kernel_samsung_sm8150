@@ -21,6 +21,11 @@
 #include "sde_connector.h"
 #include "dsi_drm.h"
 #include "sde_trace.h"
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+//#include "ss_dsi_panel_common.h"
+#include "../samsung/ss_dsi_panel_common.h"
+
+#endif
 
 #define to_dsi_bridge(x)     container_of((x), struct dsi_bridge, base)
 #define to_dsi_state(x)      container_of((x), struct dsi_connector_state, base)
@@ -158,6 +163,9 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	int rc = 0;
 	struct dsi_bridge *c_bridge = to_dsi_bridge(bridge);
 
+	// KR_TEMP
+	pr_err("%s ++\n", __func__);
+
 	if (!bridge) {
 		pr_err("Invalid params\n");
 		return;
@@ -209,6 +217,8 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	if (rc)
 		pr_err("Continuous splash pipeline cleanup failed, rc=%d\n",
 									rc);
+	// KR_TEMP
+	pr_err("%s --\n", __func__);
 }
 
 static void dsi_bridge_enable(struct drm_bridge *bridge)
@@ -395,7 +405,22 @@ static bool dsi_bridge_mode_fixup(struct drm_bridge *bridge,
 			(!(dsi_mode.dsi_mode_flags & DSI_MODE_FLAG_DYN_CLK)) &&
 			(!crtc_state->active_changed ||
 			 display->is_cont_splash_enabled))
-			dsi_mode.dsi_mode_flags |= DSI_MODE_FLAG_DMS;
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+			if (display->panel->panel_initialized || display->is_cont_splash_enabled) {
+				dsi_mode.dsi_mode_flags |= DSI_MODE_FLAG_DMS;
+				pr_info("DMS : switch mode %s -> %s\n", (&cur_mode)->name, adjusted_mode->name);
+			}
+#endif
+
+		/* Reject seemless transition when active changed. */
+		if (crtc_state->active_changed &&
+			((dsi_mode.dsi_mode_flags & DSI_MODE_FLAG_VRR) ||
+			(dsi_mode.dsi_mode_flags & DSI_MODE_FLAG_DYN_CLK))) {
+			pr_err("seamless upon active changed 0x%x %d\n",
+				dsi_mode.dsi_mode_flags,
+				crtc_state->active_changed);
+			return false;
+		}
 	}
 
 	/* convert back to drm mode, propagating the private info & flags */
@@ -447,6 +472,7 @@ int dsi_conn_get_mode_info(struct drm_connector *connector,
 	if (!dsi_mode.priv_info)
 		return -EINVAL;
 
+	SDE_EVT32(mode_info,  ((unsigned long long)mode_info) >> 32, connector, ((unsigned long long)connector) >> 32, 0x9999);
 	memset(mode_info, 0, sizeof(*mode_info));
 
 	timing = &dsi_mode.timing;
@@ -477,6 +503,7 @@ int dsi_conn_get_mode_info(struct drm_connector *connector,
 			sizeof(dsi_mode.priv_info->roi_caps));
 	}
 
+	SDE_EVT32(dsi_mode.priv_info->dsc_enabled, mode_info->clk_rate, mode_info->frame_rate, 0x9999);
 	return 0;
 }
 
@@ -881,6 +908,17 @@ int dsi_conn_pre_kickoff(struct drm_connector *connector,
 	return dsi_display_pre_kickoff(connector, display, params);
 }
 
+int dsi_conn_prepare_commit(void *display,
+		struct msm_display_conn_params *params)
+{
+	if (!display || !params) {
+		pr_err("Invalid params\n");
+		return -EINVAL;
+	}
+
+	return dsi_display_pre_commit(display, params);
+}
+
 void dsi_conn_enable_event(struct drm_connector *connector,
 		uint32_t event_idx, bool enable, void *display)
 {
@@ -895,7 +933,8 @@ void dsi_conn_enable_event(struct drm_connector *connector,
 			event_idx, &event_info, enable);
 }
 
-int dsi_conn_post_kickoff(struct drm_connector *connector)
+int dsi_conn_post_kickoff(struct drm_connector *connector,
+	struct msm_display_conn_params *params)
 {
 	struct drm_encoder *encoder;
 	struct dsi_bridge *c_bridge;
@@ -903,6 +942,7 @@ int dsi_conn_post_kickoff(struct drm_connector *connector)
 	struct dsi_display *display;
 	struct dsi_display_ctrl *m_ctrl, *ctrl;
 	int i, rc = 0;
+	bool enable;
 
 	if (!connector || !connector->state) {
 		pr_err("invalid connector or connector state");
@@ -947,6 +987,13 @@ int dsi_conn_post_kickoff(struct drm_connector *connector)
 
 	/* ensure dynamic clk switch flag is reset */
 	c_bridge->dsi_mode.dsi_mode_flags &= ~DSI_MODE_FLAG_DYN_CLK;
+
+	if (params->qsync_update) {
+		enable = (params->qsync_mode > 0) ? true : false;
+		display_for_each_ctrl(i, display) {
+			dsi_ctrl_setup_avr(display->ctrl[i].ctrl, enable);
+		}
+	}
 
 	return 0;
 }

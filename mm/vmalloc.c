@@ -1530,7 +1530,7 @@ static void __vunmap(const void *addr, int deallocate_pages)
 			addr))
 		return;
 
-	area = find_vmap_area((unsigned long)addr)->vm;
+	area = find_vm_area(addr);
 	if (unlikely(!area)) {
 		WARN(1, KERN_ERR "Trying to vfree() nonexistent vm area (%p)\n",
 				addr);
@@ -2782,9 +2782,32 @@ static const struct file_operations proc_vmalloc_operations = {
 	.release	= seq_release_private,
 };
 
+static int vmalloc_size_notifier(struct notifier_block *nb,
+					unsigned long action, void *data)
+{
+	struct seq_file *s;
+
+	s = (struct seq_file *)data;
+	if (s != NULL)
+		seq_printf(s, "VmallocAPIsize: %8lu kB\n",
+			   atomic_long_read(&nr_vmalloc_pages)
+				 << (PAGE_SHIFT - 10));
+	else
+		pr_cont("VmallocAPIsize:%lukB ",
+			atomic_long_read(&nr_vmalloc_pages)
+				<< (PAGE_SHIFT - 10));
+	return 0;
+}
+
+static struct notifier_block vmalloc_size_nb = {
+	.notifier_call = vmalloc_size_notifier,
+};
+
 static int __init proc_vmalloc_init(void)
 {
 	proc_create("vmallocinfo", S_IRUSR, NULL, &proc_vmalloc_operations);
+	atomic_long_set(&nr_vmalloc_pages, 0);
+	show_mem_extra_notifier_register(&vmalloc_size_nb);
 	return 0;
 }
 module_init(proc_vmalloc_init);

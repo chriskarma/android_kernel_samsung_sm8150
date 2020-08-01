@@ -20,6 +20,7 @@
 #include <linux/msm_kgsl.h>
 #include <linux/ratelimit.h>
 #include <linux/of_platform.h>
+#include <linux/random.h>
 #include <soc/qcom/scm.h>
 #include <soc/qcom/secure_buffer.h>
 #include <linux/compat.h>
@@ -33,6 +34,13 @@
 #include "adreno.h"
 #include "kgsl_trace.h"
 #include "kgsl_pwrctrl.h"
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+#if defined(CONFIG_SEC_ABC)
+#include <linux/sti/abc_common.h>
+#endif
+#include "../drm/msm/samsung/ss_dpui_common.h"
+#endif
 
 #define _IOMMU_PRIV(_mmu) (&((_mmu)->priv.iommu))
 
@@ -54,14 +62,21 @@ static bool need_iommu_sync;
 
 const unsigned int kgsl_iommu_reg_list[KGSL_IOMMU_REG_MAX] = {
 	0x0,/* SCTLR */
+	0x4,/* ACTLR */
+	0x008,/* RESUME */
+	0x10, /* TCR */
 	0x20,/* TTBR0 */
+	0x28,/* TTBR1 */
+	0x30,/* TTBCR */
 	0x34,/* CONTEXTIDR */
+	0x38,/* MAIR0 */
+	0x3C,/* MAIR1 */
 	0x58,/* FSR */
 	0x60,/* FAR_0 */
-	0x618,/* TLBIALL */
-	0x008,/* RESUME */
 	0x68,/* FSYNR0 */
 	0x6C,/* FSYNR1 */
+	0x70,/* IPAFAR */
+	0x618,/* TLBIALL */
 	0x7F0,/* TLBSYNC */
 	0x7F4,/* TLBSTATUS */
 };
@@ -90,15 +105,8 @@ static struct kmem_cache *addr_entry_cache;
  *
  * Here we define an array and a simple allocator to keep track of the currently
  * active global entries. Each entry is assigned a unique address inside of a
- * MMU implementation specific "global" region. The addresses are assigned
- * sequentially and never re-used to avoid having to go back and reprogram
- * existing pagetables. The entire list of active entries are mapped and
- * unmapped into every new pagetable as it is created and destroyed.
- *
- * Because there are relatively few entries and they are defined at boot time we
- * don't need to go over the top to define a dynamic allocation scheme. It will
- * be less wasteful to pick a static number with a little bit of growth
- * potential.
+ * MMU implementation specific "global" region. We use a simple bitmap based
+ * allocator for the region to allow for both fixed and dynamic addressing.
  */
 
 #define GLOBAL_PT_ENTRIES 32
@@ -108,13 +116,17 @@ struct global_pt_entry {
 	char name[32];
 };
 
+#define GLOBAL_MAP_PAGES (KGSL_IOMMU_GLOBAL_MEM_SIZE >> PAGE_SHIFT)
+
 static struct global_pt_entry global_pt_entries[GLOBAL_PT_ENTRIES];
+static DECLARE_BITMAP(global_map, GLOBAL_MAP_PAGES);
+
 static int secure_global_size;
 static int global_pt_count;
-uint64_t global_pt_alloc;
 static struct kgsl_memdesc gpu_qdss_desc;
 static struct kgsl_memdesc gpu_qtimer_desc;
 static unsigned int context_bank_number;
+
 void kgsl_print_global_pt_entries(struct seq_file *s)
 {
 	int i;
@@ -209,6 +221,12 @@ static void kgsl_iommu_remove_global(struct kgsl_mmu *mmu,
 
 	for (i = 0; i < global_pt_count; i++) {
 		if (global_pt_entries[i].memdesc == memdesc) {
+			u64 offset = memdesc->gpuaddr -
+				KGSL_IOMMU_GLOBAL_MEM_BASE(mmu);
+
+			bitmap_clear(global_map, offset >> PAGE_SHIFT,
+				kgsl_memdesc_footprint(memdesc) >> PAGE_SHIFT);
+
 			memdesc->gpuaddr = 0;
 			memdesc->priv &= ~KGSL_MEMDESC_GLOBAL;
 			global_pt_entries[i].memdesc = NULL;
@@ -220,19 +238,43 @@ static void kgsl_iommu_remove_global(struct kgsl_mmu *mmu,
 static void kgsl_iommu_add_global(struct kgsl_mmu *mmu,
 		struct kgsl_memdesc *memdesc, const char *name)
 {
+	u32 bit, start = 0;
+	u64 size = kgsl_memdesc_footprint(memdesc);
+
 	if (memdesc->gpuaddr != 0)
 		return;
 
-	/*Check that we can fit the global allocations */
-	if (WARN_ON(global_pt_count >= GLOBAL_PT_ENTRIES) ||
-		WARN_ON((global_pt_alloc + memdesc->size) >=
-			KGSL_IOMMU_GLOBAL_MEM_SIZE))
+	if (WARN_ON(global_pt_count >= GLOBAL_PT_ENTRIES))
 		return;
 
-	memdesc->gpuaddr = KGSL_IOMMU_GLOBAL_MEM_BASE(mmu) + global_pt_alloc;
+	if (WARN_ON(size > KGSL_IOMMU_GLOBAL_MEM_SIZE))
+		return;
+
+	if (memdesc->priv & KGSL_MEMDESC_RANDOM) {
+		u32 range = GLOBAL_MAP_PAGES - (size >> PAGE_SHIFT);
+
+		start = get_random_int() % range;
+	}
+
+	while (start >= 0) {
+		bit = bitmap_find_next_zero_area(global_map, GLOBAL_MAP_PAGES,
+			start, size >> PAGE_SHIFT, 0);
+
+		if (bit < GLOBAL_MAP_PAGES)
+			break;
+
+		start--;
+	}
+
+	if (WARN_ON(start < 0))
+		return;
+
+	memdesc->gpuaddr =
+		KGSL_IOMMU_GLOBAL_MEM_BASE(mmu) + (bit << PAGE_SHIFT);
+
+	bitmap_set(global_map, bit, size >> PAGE_SHIFT);
 
 	memdesc->priv |= KGSL_MEMDESC_GLOBAL;
-	global_pt_alloc += kgsl_memdesc_footprint(memdesc);
 
 	global_pt_entries[global_pt_count].memdesc = memdesc;
 	strlcpy(global_pt_entries[global_pt_count].name, name,
@@ -776,6 +818,10 @@ static int kgsl_iommu_fault_handler(struct iommu_domain *domain,
 	adreno_dev = ADRENO_DEVICE(device);
 	gpudev = ADRENO_GPU_DEVICE(adreno_dev);
 
+	adreno_dev->pf_info.addr = addr;
+	adreno_dev->pf_info.jiff = jiffies;
+	adreno_dev->pf_info.count++;
+
 	if (pt->name == KGSL_MMU_SECURE_PT)
 		ctx = &iommu->ctx[KGSL_IOMMU_CONTEXT_SECURE];
 
@@ -829,6 +875,33 @@ static int kgsl_iommu_fault_handler(struct iommu_domain *domain,
 
 	ptbase = KGSL_IOMMU_GET_CTX_REG_Q(ctx, TTBR0);
 	contextidr = KGSL_IOMMU_GET_CTX_REG(ctx, CONTEXTIDR);
+
+	adreno_dev->pf_info.ttbr = ptbase;
+	{
+		unsigned int sctlr, actlr, ttbcr, mair0, mair1, fsr;
+		unsigned int fsynr0, fsynr1, tlbstatus;
+		uint64_t far, ipafar;
+
+		sctlr = KGSL_IOMMU_GET_CTX_REG(ctx, SCTLR);
+		actlr = KGSL_IOMMU_GET_CTX_REG(ctx, ACTLR);
+		ttbcr = KGSL_IOMMU_GET_CTX_REG(ctx, TTBCR);
+		mair0 = KGSL_IOMMU_GET_CTX_REG(ctx, MAIR0);
+		mair1 = KGSL_IOMMU_GET_CTX_REG(ctx, MAIR1);
+		fsr = KGSL_IOMMU_GET_CTX_REG(ctx, FSR);
+		fsynr0 = KGSL_IOMMU_GET_CTX_REG(ctx, FSYNR0);
+		fsynr1 = KGSL_IOMMU_GET_CTX_REG(ctx, FSYNR1);
+		tlbstatus = KGSL_IOMMU_GET_CTX_REG(ctx, TLBSTATUS);
+
+		far = KGSL_IOMMU_GET_CTX_REG_Q(ctx, FAR);
+		ipafar = KGSL_IOMMU_GET_CTX_REG_Q(ctx, IPAFAR);
+
+		dev_err_ratelimited(device->dev, "[sctlr] 0x%08x\n[actlr] 0x%08x\n[ttbcr] 0x%08x\n[mair0] 0x%08x\n[mair1] 0x%08x\n[fsr] 0x%08x\n[fsynr0] 0x%08x\n[fsynr1] 0x%08x\n[tlbstat] 0x%08x\n",
+			sctlr, actlr, ttbcr, mair0, mair1, fsr, fsynr0,
+			fsynr1, tlbstatus);
+		dev_err_ratelimited(device->dev, "[far] 0x%016lx\n[ipafar] 0x%016lx\n",
+			(unsigned long)far,
+			(unsigned long)ipafar);
+	}
 
 	ptname = MMU_FEATURE(mmu, KGSL_MMU_GLOBAL_PAGETABLE) ?
 		KGSL_MMU_GLOBAL_PT : pid;
@@ -907,6 +980,21 @@ static int kgsl_iommu_fault_handler(struct iommu_domain *domain,
 			else
 				KGSL_LOG_DUMP(ctx->kgsldev, "*EMPTY*\n");
 		}
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+#if defined(CONFIG_SEC_ABC)
+		sec_abc_send_event("MODULE=gpu_qc@ERROR=gpu_page_fault");
+#endif
+		inc_dpui_u32_field(DPUI_KEY_QCT_GPU_PF, 1);
+
+		{
+			/* To print gpuaddr info */
+			extern void kgsl_svm_addr_mapping_check(pid_t pid, uint64_t fault_addr);
+			extern void kgsl_svm_addr_mapping_log(pid_t pid);
+
+			kgsl_svm_addr_mapping_log(ptname);
+			kgsl_svm_addr_mapping_check(ptname, addr);
+		}
+#endif
 	}
 
 
@@ -2118,6 +2206,15 @@ kgsl_iommu_get_current_ttbr0(struct kgsl_mmu *mmu)
 		return 0;
 
 	kgsl_iommu_enable_clk(mmu);
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	if (ctx->regbase == NULL) {
+		WARN(1, "regbase seems not to be initialzed yet\n");
+		kgsl_iommu_disable_clk(mmu);
+		return 0;
+	}
+#endif
+
 	val = KGSL_IOMMU_GET_CTX_REG_Q(ctx, TTBR0);
 	kgsl_iommu_disable_clk(mmu);
 	return val;
