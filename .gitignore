@@ -129,3 +129,5 @@ kernel/configs/android-*.cfg
 # output dir
 /out/
 __pycache__/
+
+/scripts/rkp_cfp/*.pyc
