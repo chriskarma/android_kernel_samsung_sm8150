@@ -6150,6 +6150,10 @@ static int run_test_open_short(struct zt75xx_ts_info *info)
 	write_reg(client, ZT75XX_PERIODICAL_INTERRUPT_INTERVAL, 0);
 	write_cmd(client, ZT75XX_CLEAR_INT_STATUS_CMD);
 #endif
+	if (zt75xx_fix_active_mode(info, true) != I2C_SUCCESS) {
+		input_info(true, &client->dev, "%s: failed fix active mode\n", __func__);
+		goto out;
+	}
 
 	ret = ts_set_touchmode(TOUCH_CHANNEL_TEST_MODE);
 	if (ret < 0) {
@@ -6180,6 +6184,7 @@ static int run_test_open_short(struct zt75xx_ts_info *info)
 	}
 
 out:
+	zt75xx_fix_active_mode(info, false);
 #if ESD_TIMER_INTERVAL
 	esd_timer_start(CHECK_ESD_TIMER, info);
 	write_reg(client, ZT75XX_PERIODICAL_INTERRUPT_INTERVAL,

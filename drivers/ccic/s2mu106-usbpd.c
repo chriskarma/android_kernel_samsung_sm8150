@@ -287,7 +287,6 @@ static int s2mu106_usbpd_get_pmeter_volt(struct s2mu106_usbpd_data *pdic_data)
 static int s2mu106_usbpd_check_vbus(struct s2mu106_usbpd_data *pdic_data,
 												int volt, CCIC_VBUS_SEL mode)
 {
-	int delay = 20;
 	int retry = 100;
 	int i = 0;
 	int ret = 0;
@@ -308,7 +307,6 @@ static int s2mu106_usbpd_check_vbus(struct s2mu106_usbpd_data *pdic_data,
 				msleep(730);
 				return true;
 			}
-			msleep(delay);
 		}
 	} else if (mode == VBUS_ON) {
 		ret = s2mu106_usbpd_get_pmeter_volt(pdic_data);
@@ -2979,6 +2977,7 @@ static int s2mu106_check_port_detect(struct s2mu106_usbpd_data *pdic_data)
 	struct i2c_client *i2c = pdic_data->i2c;
 	struct device *dev = &i2c->dev;
 	struct usbpd_data *pd_data = dev_get_drvdata(dev);
+	struct usbpd_manager_data *manager = &pd_data->manager;
 	u8 data, val;
 	u8 cc1_val = 0, cc2_val = 0;
 	int ret = 0;
@@ -3000,6 +2999,7 @@ static int s2mu106_check_port_detect(struct s2mu106_usbpd_data *pdic_data)
 
 	if ((data & S2MU106_PR_MASK) == S2MU106_PDIC_SINK) {
 		dev_info(dev, "SINK\n");
+		manager->pn_flag = false;
 		pdic_data->detach_valid = false;
 		pdic_data->power_role = PDIC_SINK;
 		pdic_data->data_role = USBPD_UFP;
@@ -3050,6 +3050,7 @@ static int s2mu106_check_port_detect(struct s2mu106_usbpd_data *pdic_data)
 			dev_info(&i2c->dev, "%s attach accessory\n", __func__);
 			return -1;
 		}
+		manager->pn_flag = false;
 		pdic_data->detach_valid = false;
 		pdic_data->power_role = PDIC_SOURCE;
 		pdic_data->data_role = USBPD_DFP;

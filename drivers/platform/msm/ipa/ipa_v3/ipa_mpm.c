@@ -2275,18 +2275,21 @@ static int ipa_mpm_mhi_probe_cb(struct mhi_device *mhi_dev,
 	atomic_inc(&ipa_mpm_ctx->probe_cnt);
 	/* Check if ODL/USB DPL pipe is connected before probe */
 	if (probe_id == IPA_MPM_MHIP_CH_ID_2) {
-		if (ipa3_is_odl_connected())
+		if (ipa3_is_odl_connected()) {
 			ret = ipa_mpm_set_dma_mode(
-							IPA_CLIENT_MHI_PRIME_DPL_PROD,
-							IPA_CLIENT_ODL_DPL_CONS, false);
-		else if (atomic_read(&ipa_mpm_ctx->adpl_over_usb_available))
+				IPA_CLIENT_MHI_PRIME_DPL_PROD,
+				IPA_CLIENT_ODL_DPL_CONS, false);
+			IPA_MPM_DBG("setting DPL DMA to ODL\n");
+		} else if (atomic_read(
+			&ipa_mpm_ctx->adpl_over_usb_available)) {
 			ret = ipa_mpm_set_dma_mode(
-							IPA_CLIENT_MHI_PRIME_DPL_PROD,
-							IPA_CLIENT_USB_DPL_CONS, false);
-	if (ret)
-		IPA_MPM_ERR("DPL DMA to ODL/USB failed, ret = %d\n",
-		ret);
-
+				IPA_CLIENT_MHI_PRIME_DPL_PROD,
+				IPA_CLIENT_USB_DPL_CONS, false);
+			IPA_MPM_DBG("setting DPL DMA to USB\n");
+		}
+		if (ret)
+			IPA_MPM_ERR("DPL DMA to ODL/USB failed, ret = %d\n",
+				ret);
 	}
 	mutex_lock(&ipa_mpm_ctx->md[probe_id].mutex);
 	ipa_mpm_ctx->md[probe_id].init_complete = true;
@@ -2519,6 +2522,12 @@ int ipa_mpm_mhip_xdci_pipe_enable(enum ipa_usb_teth_prot xdci_teth_prot)
 			IPA_CLIENT_MHI_PRIME_RMNET_CONS, false);
 		break;
 	case IPA_MPM_MHIP_USB_DPL:
+		if (!ipa3_is_odl_connected()) {
+			ipa_mpm_set_dma_mode(
+				IPA_CLIENT_MHI_PRIME_DPL_PROD,
+				IPA_CLIENT_USB_DPL_CONS, false);
+			IPA_MPM_DBG("setting DPL DMA to USB\n");
+		}
 		IPA_MPM_DBG("connecting DPL prot %d\n", mhip_client);
 		ipa_mpm_change_teth_state(probe_id, IPA_MPM_TETH_CONNECTED);
 		atomic_set(&ipa_mpm_ctx->adpl_over_usb_available, 1);
@@ -2975,26 +2984,18 @@ int ipa3_mpm_enable_adpl_over_odl(bool enable)
 	if (enable) {
 		/* inc clk count and set DMA to ODL */
 		IPA_MPM_DBG("mpm enabling ADPL over ODL\n");
-
+		ret = ipa_mpm_set_dma_mode(IPA_CLIENT_MHI_PRIME_DPL_PROD,
+			IPA_CLIENT_ODL_DPL_CONS, false);
+		if (ret) {
+			IPA_MPM_ERR("MPM failed to set dma mode to ODL\n");
+			return ret;
+		}
 		ret = ipa_mpm_vote_unvote_pcie_clk(CLK_ON,
 			IPA_MPM_MHIP_CH_ID_2, false, &is_acted);
 		if (ret) {
 			IPA_MPM_ERR("Err %d cloking on PCIe clk\n", ret);
 			return ret;
 		}
-
-		ret = ipa_mpm_set_dma_mode(IPA_CLIENT_MHI_PRIME_DPL_PROD,
-			IPA_CLIENT_ODL_DPL_CONS, false);
-		if (ret) {
-			IPA_MPM_ERR("MPM failed to set dma mode to ODL\n");
-			if (is_acted)
-				ipa_mpm_vote_unvote_pcie_clk(CLK_OFF,
-					IPA_MPM_MHIP_CH_ID_2,
-					false,
-					&is_acted);
-			return ret;
-		}
-
 		ipa_mpm_change_teth_state(IPA_MPM_MHIP_CH_ID_2,
 			IPA_MPM_TETH_CONNECTED);
 	} else {
@@ -3009,19 +3010,19 @@ int ipa3_mpm_enable_adpl_over_odl(bool enable)
 				return ret;
 		}
 
-		ret = ipa_mpm_set_dma_mode(IPA_CLIENT_MHI_PRIME_DPL_PROD,
-			IPA_CLIENT_USB_DPL_CONS, false);
-		if (ret) {
-			IPA_MPM_ERR("MPM failed to set dma mode to USB\n");
-			if (ipa_mpm_vote_unvote_pcie_clk(CLK_ON,
-				IPA_MPM_MHIP_CH_ID_2, false,
-				&is_acted))
-				IPA_MPM_ERR("Err clocking on pcie\n");
-			return ret;
-		}
-
 		/* If USB is not available then reset teth state */
 		if (atomic_read(&ipa_mpm_ctx->adpl_over_usb_available)) {
+			ret = ipa_mpm_set_dma_mode(
+				IPA_CLIENT_MHI_PRIME_DPL_PROD,
+				IPA_CLIENT_USB_DPL_CONS, false);
+			if (ret) {
+				IPA_MPM_ERR("MPM failed to set dma mode\n");
+				if (ipa_mpm_vote_unvote_pcie_clk(CLK_ON,
+					IPA_MPM_MHIP_CH_ID_2, false,
+					&is_acted))
+					IPA_MPM_ERR("Err clocking on pcie\n");
+				return ret;
+			}
 			IPA_MPM_DBG("mpm enabling ADPL over USB\n");
 		} else {
 			ipa_mpm_change_teth_state(IPA_MPM_MHIP_CH_ID_2,

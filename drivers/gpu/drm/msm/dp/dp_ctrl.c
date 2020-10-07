@@ -384,7 +384,8 @@ static int dp_ctrl_link_rate_down_shift(struct dp_ctrl_private *ctrl)
 	pr_debug("new bw code=0x%x\n", ctrl->link->link_params.bw_code);
 
 #ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
-	secdp_bigdata_save_item(BD_CUR_LINK_RATE, ctrl->link->link_params.bw_code);
+	secdp_bigdata_save_item(BD_CUR_LINK_RATE,
+		ctrl->link->link_params.bw_code);
 #endif
 
 	return ret;
@@ -813,7 +814,8 @@ static bool dp_ctrl_get_link_train_status(struct dp_ctrl *dp_ctrl)
 	}
 
 	ctrl = container_of(dp_ctrl, struct dp_ctrl_private, dp_ctrl);
-	pr_info("link_train_status: %s\n", ctrl->link_train_status ? "success": "failure");
+	pr_info("link_train_status: %s\n",
+		ctrl->link_train_status ? "success" : "failure");
 	return ctrl->link_train_status;
 }
 #endif
@@ -1051,31 +1053,6 @@ static void dp_ctrl_mst_calculate_rg(struct dp_ctrl_private *ctrl,
 	pr_debug("x_int: %d, y_frac_enum: %d\n", x_int, y_frac_enum);
 }
 
-#ifdef SECDP_OPTIMAL_LINK_RATE
-static u32 secdp_dp_gen_link_clk(struct dp_panel *dp_panel)
-{
-	u32 calc_link_rate;
-	u32 min_link_rate = dp_panel->get_min_req_link_rate(dp_panel);
-
-	pr_debug("+++, min_link_rate <%u>\n", min_link_rate);
-
-	if (min_link_rate <= 162000)
-		calc_link_rate = 162000;
-	else if (min_link_rate <= 270000)
-		calc_link_rate = 270000;
-	else if (min_link_rate <= 540000)
-		calc_link_rate = 540000;
-	else {
-		/* Cap the link rate to the max supported rate */
-		pr_debug("min_link_rate is not supported, setting 5.4G\n");
-		calc_link_rate = 540000;
-	}
-
-	pr_debug("---, calc_link_rate <%u>\n", calc_link_rate);
-	return calc_link_rate;
-}
-#endif
-
 static int dp_ctrl_mst_send_act(struct dp_ctrl_private *ctrl)
 {
 	bool act_complete;
@@ -1273,6 +1250,74 @@ static void dp_ctrl_stream_off(struct dp_ctrl *dp_ctrl, struct dp_panel *panel)
 	ctrl->stream_count--;
 }
 
+#ifdef SECDP_OPTIMAL_LINK_RATE
+/* DP testbox list */
+static char secdp_tbox[][14] = {
+	"UNIGRAF TE",
+	"UFG DPR-120",
+	"UCD-400 DP",
+	"AGILENT ATR",
+	"UFG DP SINK",
+};
+
+/** check if connected sink is testbox or not
+ * return true		if it's testbox
+ * return false		otherwise (real sink)
+ */
+static bool secdp_check_tbox(struct dp_ctrl_private *ctrl)
+{
+	struct dp_panel *panel;
+	int i, rc;
+	bool ret = false;
+
+	if (!ctrl || !ctrl->panel)
+		goto end;
+
+	panel = ctrl->panel;
+
+	for (i = 0; i < dim(secdp_tbox); i++) {
+		rc = strncmp(panel->monitor_name, secdp_tbox[i],
+				strlen(panel->monitor_name));
+		if (!rc) {
+			pr_info("<%s> detected!\n", panel->monitor_name);
+			ret = true;
+			goto end;
+		}
+	}
+
+	pr_info("real sink <%s>\n", panel->monitor_name);
+end:
+	return ret;
+}
+
+static u32 secdp_dp_gen_link_clk(struct dp_panel *dp_panel)
+{
+	u32 calc_link_rate = 540000;	/* default HBR2 */
+	u32 min_link_rate;
+
+	if (!dp_panel)
+		goto end;
+
+	min_link_rate = dp_panel->get_min_req_link_rate(dp_panel);
+
+	if (min_link_rate == 0)
+		pr_info("timing not found, set default\n");
+	else if (min_link_rate <= 162000)
+		calc_link_rate = 162000;
+	else if (min_link_rate <= 270000)
+		calc_link_rate = 270000;
+	else if (min_link_rate <= 540000)
+		calc_link_rate = 540000;
+	else
+		pr_err("too big!, set default\n");
+
+	pr_info("min_link_rate <%u>, calc_link_rate <%u>\n",
+		min_link_rate, calc_link_rate);
+end:
+	return calc_link_rate;
+}
+#endif
+
 static int dp_ctrl_on(struct dp_ctrl *dp_ctrl, bool mst_mode,
 				bool fec_mode, bool shallow)
 {
@@ -1302,18 +1347,17 @@ static int dp_ctrl_on(struct dp_ctrl *dp_ctrl, bool mst_mode,
 	if (ctrl->link->sink_request & DP_TEST_LINK_PHY_TEST_PATTERN) {
 		pr_debug("using phy test link parameters\n");
 	} else {
-#ifndef SECDP_OPTIMAL_LINK_RATE
+#ifdef SECDP_OPTIMAL_LINK_RATE
+		if (!secdp_check_tbox(ctrl))
+			rate = secdp_dp_gen_link_clk(ctrl->panel);
+#endif
 		ctrl->link->link_params.bw_code =
 			drm_dp_link_rate_to_bw_code(rate);
-#else
-		ctrl->link->link_params.bw_code =
-			drm_dp_link_rate_to_bw_code(secdp_dp_gen_link_clk(ctrl->panel));
-#endif
 		ctrl->link->link_params.lane_count =
 			ctrl->panel->link_info.num_lanes;
 	}
 
-	pr_debug("bw_code=%d, lane_count=%d\n",
+	pr_info("bw_code=%d, lane_count=%d\n",
 		ctrl->link->link_params.bw_code,
 		ctrl->link->link_params.lane_count);
 

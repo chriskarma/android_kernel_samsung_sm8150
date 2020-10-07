@@ -309,7 +309,7 @@ static int s2mu106_charger_otg_control(
 		msleep(30);
 		/* 5. QBAT On even if BAT OCP occure */
 		s2mu106_update_reg(charger->i2c, S2MU106_CHG_CTRL9, 0x0, 0x10);
-		mdelay(10);
+		usleep_range(10000, 11000);
 		/* 6. OTG Enable */
 		regmode_vote(charger, REG_MODE_OTG, REG_MODE_OTG);
 		msleep(20);
@@ -386,10 +386,10 @@ static void s2mu106_set_buck(
 		pr_info("[DEBUG]%s: check input current(%d, %d)\n",
 			__func__, prev_current, charger->input_current);
 		s2mu106_set_input_current_limit(charger, 50);
-		mdelay(50);
+		msleep(50);
 		/* async mode */
 		s2mu106_update_reg(charger->i2c, 0x3A, 0x03, 0x03);
-		mdelay(50);
+		msleep(50);
 		regmode_vote(charger, REG_MODE_CHG|REG_MODE_BUCK, 0);
 		/* auto async mode */
 		s2mu106_update_reg(charger->i2c, 0x3A, 0x01, 0x03);
@@ -1834,7 +1834,7 @@ static void s2mu106_ivr_irq_work(struct work_struct *work)
 			reduce_input_current(charger);
 			ivr_cnt = 0;
 		}
-		mdelay(50);
+		msleep(50);
 
 		if (!(ivr_state & IVR_STATUS)) {
 			pr_info("%s: EXIT IVR WORK: check value (0x13:0x%02x, input current:%d)\n", __func__,

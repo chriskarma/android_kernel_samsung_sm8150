@@ -1288,7 +1288,8 @@ static int dp_display_process_hpd_high(struct dp_display_private *dp)
 		goto notify;
 	}
 	dp->sec.dex.prev = secdp_check_dex_mode();
-	pr_info("dex.setting_ui: %d, dex.curr: %d\n", dp->sec.dex.setting_ui, dp->sec.dex.curr);
+	pr_info("dex.setting_ui: %d, dex.curr: %d\n",
+		dp->sec.dex.setting_ui, dp->sec.dex.curr);
 	secdp_read_branch_revision(dp);
 #endif
 
@@ -2103,7 +2104,6 @@ static void secdp_process_attention(struct dp_display_private *dp,
 	if (noti->id == CCIC_NOTIFY_ID_DP_HPD && noti->sub1 == CCIC_NOTIFY_LOW) {
 		dp->sec.dex.prev = dp->sec.dex.curr = DEX_DISABLED;
 		secdp_clear_link_status_update_cnt(dp->link);
-
 		dp_display_disconnect_sync(dp);
 		goto end;
 	}
@@ -2117,7 +2117,6 @@ handle_hpd_high:
 		secdp_clear_link_status_update_cnt(dp->link);
 		queue_work(dp->wq, &dp->connect_work);
 	}
-
 end:
 	return;
 }
@@ -2137,10 +2136,8 @@ static void secdp_handle_attention(struct dp_display_private *dp)
 
 		secdp_process_attention(dp, &node->noti);
 
-#ifdef CONFIG_SEC_DISPLAYPORT
 		/* add some delay to guarantee hpd event handling in framework side */
 		msleep(60);
-#endif
 
 		list_del(&node->list);
 		mutex_unlock(&dp->attention_lock);
@@ -2191,6 +2188,43 @@ void secdp_self_test_hdcp_off(void)
 }	
 #endif
 
+static void secdp_ccic_connect_init(struct dp_display_private *dp,
+		CC_NOTI_TYPEDEF *noti, bool connect)
+{
+	dp->sec.cable_connected = dp->hpd->alt_mode_cfg_done = connect;
+	dp->hpd->orientation    = connect ?
+		secdp_get_plug_orientation() : ORIENTATION_NONE;
+
+	dp->hpd->multi_func     = false;
+	dp->sec.link_conf       = false;
+	dp->sec.hdcp_retry      = 0;
+	dp->sec.prefer_ratio    = MON_RATIO_NA;
+
+	/* set flags here as soon as disconnected
+	 * resource clear will be made later at "secdp_process_attention" */
+	dp->sec.dex.res = connect ?
+		secdp_check_adapter_type(noti->sub2, noti->sub3) : DEX_RES_NOT_SUPPORT;
+	dp->sec.dex.prev = dp->sec.dex.curr = DEX_DISABLED;
+	dp->sec.dex.reconnecting = 0;
+
+	secdp_clear_branch_info(dp);
+	secdp_clear_link_status_update_cnt(dp->link);
+	secdp_logger_set_max_count(300);
+
+#ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
+	if (connect) {
+		secdp_bigdata_connection();
+		secdp_bigdata_save_item(BD_ORIENTATION,
+			(dp->hpd->orientation == ORIENTATION_CC1) ? "CC1" : "CC2");
+		secdp_bigdata_save_item(BD_ADT_VID, noti->sub2);
+		secdp_bigdata_save_item(BD_ADT_PID, noti->sub3);
+	} else
+		secdp_bigdata_disconnection();
+#endif
+
+	return;
+}
+
 static int secdp_ccic_noti_cb(struct notifier_block *nb, unsigned long action,
 		void *data)
 {
@@ -2214,23 +2248,7 @@ static int secdp_ccic_noti_cb(struct notifier_block *nb, unsigned long action,
 
 		switch (noti.sub1) {
 		case CCIC_NOTIFY_ATTACH:
-			dp->sec.cable_connected = true;
-			dp->sec.hdcp_retry = 0;
-			dp->hpd->alt_mode_cfg_done = true;
-			dp->hpd->multi_func = false;
-			secdp_clear_link_status_update_cnt(dp->link);
-			dp->hpd->orientation = secdp_get_plug_orientation();
-			dp->sec.prefer_ratio = MON_RATIO_NA;
-			dp->sec.dex.res =
-				secdp_check_adapter_type(noti.sub2, noti.sub3);
-#ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
-			secdp_bigdata_connection();
-			secdp_bigdata_save_item(BD_ORIENTATION,
-				dp->hpd->orientation == ORIENTATION_CC1 ? "CC1" : "CC2");
-			secdp_bigdata_save_item(BD_ADT_VID, noti.sub2);
-			secdp_bigdata_save_item(BD_ADT_PID, noti.sub3);
-#endif
-			secdp_logger_set_max_count(300);
+			secdp_ccic_connect_init(dp, &noti, true);
 
 #ifndef SECDP_USB_CONCURRENCY
 			/* see dp_display_usbpd_configure_cb() */
@@ -2241,11 +2259,9 @@ static int secdp_ccic_noti_cb(struct notifier_block *nb, unsigned long action,
 				secdp_self_test_start_reconnect(secdp_dex_do_reconnecting);
 
 			secdp_self_register_clear_func(ST_EDID, secdp_self_test_edid_clear);
- 
 			if (secdp_self_test_status(ST_EDID) >= 0)
 				dp->panel->set_edid(dp->panel, secdp_self_test_get_edid()); 
 #endif
-
 			break;
 
 		case CCIC_NOTIFY_DETACH:
@@ -2254,30 +2270,10 @@ static int secdp_ccic_noti_cb(struct notifier_block *nb, unsigned long action,
 				goto end;
 			}
 			dp->is_dp_disconnecting = 1;
-			secdp_logger_set_max_count(300);
-#ifdef CONFIG_COMBO_REDRIVER_PTN36502
-			secdp_redriver_onoff(false, 0);
-#endif
-			/* set flags here as soon as disconnected
-			 * resource clear will be made later at "secdp_process_attention"
-			 */
-			dp->sec.dex.prev = dp->sec.dex.curr = DEX_DISABLED;
-			dp->sec.dex.res = DEX_RES_NOT_SUPPORT;
-			dp->sec.dex.reconnecting = 0;
-			dp->sec.prefer_ratio = MON_RATIO_NA;
-			dp->sec.cable_connected = false;
-			dp->sec.hdcp_retry = 0;
-			dp->sec.link_conf = false;
 			atomic_set(&dp->sec.hpd, 0);
-			dp->hpd->orientation = ORIENTATION_NONE;
-			dp->hpd->multi_func = false;
-			secdp_clear_link_status_update_cnt(dp->link);
-			dp->hpd->alt_mode_cfg_done = false;
 
-			secdp_clear_branch_info(dp);
-#ifdef CONFIG_SEC_DISPLAYPORT_BIGDATA
-			secdp_bigdata_disconnection();
-#endif
+			secdp_redriver_onoff(false, 0);
+			secdp_ccic_connect_init(dp, &noti, false);
 			break;
 
 		default:
@@ -2298,23 +2294,16 @@ static int secdp_ccic_noti_cb(struct notifier_block *nb, unsigned long action,
 			noti.sub1 == CCIC_NOTIFY_DP_PIN_D ||
 			noti.sub1 == CCIC_NOTIFY_DP_PIN_F) {
 			dp->hpd->multi_func = true;
-#if defined(CONFIG_COMBO_REDRIVER_PTN36502)
 			secdp_redriver_onoff(true, 2);
-#endif
 		} else {
 			dp->hpd->multi_func = false;
-#if defined(CONFIG_COMBO_REDRIVER_PTN36502)
 			secdp_redriver_onoff(true, 4);
-#endif
 		}
-
 		pr_info("multi_func: <%d>\n", dp->hpd->multi_func);
-
 		/* see dp_display_usbpd_configure_cb() */
 
 		/* host_init is commented out to fix phy cts failure.
-		 * it's called at hpd_high function.
-		 */
+		 * it's called at hpd_high function. */
 		/* dp_display_host_init(dp); */
 #endif
 
@@ -2349,7 +2338,8 @@ static int secdp_ccic_noti_cb(struct notifier_block *nb, unsigned long action,
 		break;
 	}
 
-	pr_debug("sec.link_conf(%d), sec.hpd(%d)\n", dp->sec.link_conf, atomic_read(&dp->sec.hpd));
+	pr_debug("sec.link_conf(%d), sec.hpd(%d)\n", dp->sec.link_conf,
+		atomic_read(&dp->sec.hpd));
 	if ((dp->sec.link_conf && atomic_read(&dp->sec.hpd)) || /*hpd high? or hpd_irq?*/
 		(noti.id == CCIC_NOTIFY_ID_DP_HPD && noti.sub1 == CCIC_NOTIFY_LOW) || /*hpd low?*/
 		(noti.id == CCIC_NOTIFY_ID_DP_CONNECT && noti.sub1 == CCIC_NOTIFY_DETACH)) { /*cable disconnect?*/
@@ -2377,7 +2367,8 @@ static int secdp_ccic_noti_cb(struct notifier_block *nb, unsigned long action,
 				pr_debug("wait for detach complete\n");
 
 				init_completion(&dp->dp_off_comp);
-				ret = wait_for_completion_timeout(&dp->dp_off_comp, msecs_to_jiffies(13500));
+				ret = wait_for_completion_timeout(&dp->dp_off_comp,
+						msecs_to_jiffies(13500));
 				if (ret <= 0) {
 					pr_err("dp_off_comp timedout\n");
 					complete_all(&dp->notification_comp);
@@ -2411,8 +2402,8 @@ int secdp_wait_for_disconnect_complete(void)
 
 	if (dp->is_dp_disconnecting) {
 		init_completion(&dp->dp_disconnect_comp);
-		ret = wait_for_completion_timeout(&dp->dp_disconnect_comp, msecs_to_jiffies(17000));
-
+		ret = wait_for_completion_timeout(&dp->dp_disconnect_comp,
+				msecs_to_jiffies(17000));
 		if (ret > 0) {
 			pr_debug("dp_disconnect_comp complete!\n");
 			ret = 0;
@@ -2578,7 +2569,8 @@ static void secdp_link_status_work(struct work_struct *work)
 
 		if (!secdp_check_link_stable(dp->link)) {
 			pr_info("Check poor connection, again\n");
-			schedule_delayed_work(&dp->sec.link_status_work, msecs_to_jiffies(3000));
+			schedule_delayed_work(&dp->sec.link_status_work,
+				msecs_to_jiffies(3000));
 		}
 	}
 
@@ -3774,9 +3766,33 @@ end:
 	return ret;
 }
 
+bool secdp_find_supported_resolution(struct dp_panel_info *timing)
+{
+	struct secdp_display_timing *secdp_timing = secdp_supported_resolution;
+	int  i, res_cnt = ARRAY_SIZE(secdp_supported_resolution);
+	u32  h_active, v_active, refresh_rate;
+	bool support = false;
+
+	h_active     = timing->h_active;
+	v_active     = timing->v_active;
+	refresh_rate = timing->refresh_rate;
+
+	for (i = 0; i < res_cnt; i++) {
+		if (h_active == secdp_timing[i].active_h &&
+				v_active == secdp_timing[i].active_v &&
+				refresh_rate == secdp_timing[i].refresh_rate) {
+			support = true;
+			break;
+		}
+	}
+
+	return support;
+}
+
 static bool secdp_check_supported_resolution(struct dp_display_private *dp,
 				struct drm_display_mode *mode, bool supported)
 {
+	struct secdp_display_timing *secdp_timing = secdp_supported_resolution;
 	struct secdp_misc *sec;
 	int i, fps_diff, mode_refresh_rate;
 	bool ret = false;
@@ -3795,8 +3811,9 @@ static bool secdp_check_supported_resolution(struct dp_display_private *dp,
 		pr_info("preferred_timing! %dx%d@%dhz, %s\n",
 			mode->hdisplay, mode->vdisplay, mode->vrefresh,
 			secdp_aspect_ratio_to_string(sec->prefer_ratio));
-		pr_info("resolution | max_mirror: %d, max_dex: %d, prefer: %d\n",
-			sec->max_mir_res_idx, sec->max_dex_res_idx, sec->prefer_res_idx);
+		pr_info("max_mirror: %d, max_dex: %d, prefer: %d\n",
+			sec->max_mir_res_idx, sec->max_dex_res_idx,
+			sec->prefer_res_idx);
 
 		if (!dp->parser->prefer_res)
 			mode->type = mode->type & (unsigned int)(~DRM_MODE_TYPE_PREFERRED);
@@ -3821,42 +3838,42 @@ static bool secdp_check_supported_resolution(struct dp_display_private *dp,
 	mode_refresh_rate = drm_mode_vrefresh(mode);
 
 	for (i = 0; i < res_cnt; i++) {
-		fps_diff = secdp_supported_resolution[i].refresh_rate - mode_refresh_rate;
+		fps_diff = secdp_timing[i].refresh_rate - mode_refresh_rate;
 		fps_diff = fps_diff < 0 ? fps_diff * (-1) : fps_diff;
 
 		if (fps_diff > 1)
 			continue;
 
-		if (secdp_supported_resolution[i].interlaced != interlaced)
+		if (secdp_timing[i].interlaced != interlaced)
 			continue;
 
-		if (secdp_supported_resolution[i].active_h != mode->hdisplay)
+		if (secdp_timing[i].active_h != mode->hdisplay)
 			continue;
 
-		if (secdp_supported_resolution[i].active_v != mode->vdisplay)
+		if (secdp_timing[i].active_v != mode->vdisplay)
 			continue;
 
 		if (secdp_exceed_mst_max_pclk(mode))
 			continue;
 
 		/* sink's max mirror resolution */
-		if (sec->max_mir_res_idx < secdp_supported_resolution[i].index)
-			sec->max_mir_res_idx = secdp_supported_resolution[i].index;
+		if (sec->max_mir_res_idx < secdp_timing[i].index)
+			sec->max_mir_res_idx = secdp_timing[i].index;
 
 		/* sink's max dex resolution */
 		ret = false;
-		if (secdp_supported_resolution[i].dex_res != DEX_RES_NOT_SUPPORT &&
-				secdp_supported_resolution[i].dex_res <= secdp_get_dex_res()) {
+		if (secdp_timing[i].dex_res != DEX_RES_NOT_SUPPORT &&
+				secdp_timing[i].dex_res <= secdp_get_dex_res()) {
 			if (sec->ignore_ratio)
 				ret = true;
-			else if (secdp_supported_resolution[i].mon_ratio == sec->prefer_ratio &&
+			else if (secdp_timing[i].mon_ratio == sec->prefer_ratio &&
 					(mode_refresh_rate >= DEX_FPS_MIN && mode_refresh_rate <= DEX_FPS_MAX))
 				ret = true;
 		}
 
 		if (ret && !sec->has_prefer) {
-			if (sec->max_dex_res_idx < secdp_supported_resolution[i].index)
-				sec->max_dex_res_idx = secdp_supported_resolution[i].index;
+			if (sec->max_dex_res_idx < secdp_timing[i].index)
+				sec->max_dex_res_idx = secdp_timing[i].index;
 		}
 
 		if (dp->parser->prefer_res) {
@@ -3868,7 +3885,7 @@ static bool secdp_check_supported_resolution(struct dp_display_private *dp,
 					sec->prefer_refresh = mode_refresh_rate;
 
 					/* update preferred index */
-					sec->prefer_res_idx = secdp_supported_resolution[i].index;
+					sec->prefer_res_idx = secdp_timing[i].index;
 					sec->has_prefer = true;
 				} else {
 					sec->prefer_hdisp	= 0;

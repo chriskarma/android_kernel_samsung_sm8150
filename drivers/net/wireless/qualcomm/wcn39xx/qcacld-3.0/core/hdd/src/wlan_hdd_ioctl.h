@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014, 2017-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2014, 2017-2018, 2020 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -28,6 +28,32 @@ extern struct sock *cesium_nl_srv_sock;
 int hdd_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
 int wlan_hdd_set_mc_rate(struct hdd_adapter *adapter, int targetRate);
 
+#ifdef WLAN_FEATURE_ROAM_OFFLOAD
+/**
+ * hdd_get_roam_scan_ch_cb() - roam scan channel list callback handler
+ * @hdd_handle: Pointer to hdd context
+ * @roam_ch: pointer to roam scan ch event data
+ * @context: cookie
+ *
+ * Callback function to processes roam scan chaanel list event. If
+ * command response field in the response message is set that means
+ * event received as a response of GETROAMSCANCHANNELS command else
+ * event was rasied by firmware upon disconnection.
+ *
+ * Return: none
+ */
+void hdd_get_roam_scan_ch_cb(hdd_handle_t hdd_handle,
+			     struct roam_scan_ch_resp *roam_ch,
+			     void *context);
+#else
+static inline void
+hdd_get_roam_scan_ch_cb(hdd_handle_t hdd_handle,
+			void *roam_ch,
+			void *context)
+{
+}
+#endif
+
 /**
  * hdd_update_smps_antenna_mode() - set smps and antenna mode
  * @hdd_ctx: Pointer to hdd context
@@ -49,12 +75,25 @@ int hdd_set_antenna_mode(struct hdd_adapter *adapter,
 			  struct hdd_context *hdd_ctx, int mode);
 
 #ifdef SEC_CONFIG_POWER_BACKOFF
-#define SAR_POWER_LIMIT_FOR_GRIP_SENSOR	0
-#define SAR_POWER_LIMIT_FOR_DBS		1
-int hdd_set_sar_power_limit(struct hdd_context *hdd_ctx, uint8_t index, bool enable);
+enum tx_power_calling_value {
+	HEAD_SAR_BACKOFF_DISABLED = -1,
+	HEAD_SAR_BACKOFF_ENABLED  = 0,
+	BODY_SAR_BACKOFF_DISABLED,
+	BODY_SAR_BACKOFF_ENABLED,
+	NR_MMWAVE_SAR_BACKOFF_DISABLED,
+	NR_MMWAVE_SAR_BACKOFF_ENABLED,
+	NR_SUB6_SAR_BACKOFF_DISABLED,
+	NR_SUB6_SAR_BACKOFF_ENABLED,
+	SAR_BACKOFF_DISABLE_ALL,
+	MMW_HEAD_SAR_BACKOFF_ENABLED = 10,
+	MMW_BODY_SAR_BACKOFF_ENABLED = 11,
+};
+
+
+int hdd_set_sar_power_limit(struct hdd_context *hdd_ctx, int8_t index);
 #ifdef SEC_CONFIG_WLAN_BEACON_CHECK
 void hdd_skip_bmiss_set_timer_handler(void *data);
-#endif
+#endif /* SEC_CONFIG_WLAN_BEACON_CHECK */
 #endif /* SEC_CONFIG_POWER_BACKOFF */
 
 #endif /* end #if !defined(WLAN_HDD_IOCTL_H) */

@@ -332,7 +332,7 @@ static int qmi_sensor_read(void *data, int *temp)
 
 	if (qmi_sens->connection_active && !atomic_read(&in_suspend))
 		qmi_ts_request(qmi_sens, true);
-	wait_for_completion_timeout(&qmi_sens->complete, msecs_to_jiffies(1000));
+	wait_for_completion_timeout(&qmi_sens->complete, msecs_to_jiffies(100));
 	*temp = qmi_sens->last_reading;
 
 	return 0;

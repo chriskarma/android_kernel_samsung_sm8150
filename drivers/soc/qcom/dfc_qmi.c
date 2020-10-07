@@ -15,6 +15,7 @@
 #include <soc/qcom/rmnet_qmi.h>
 #include <soc/qcom/qmi_rmnet.h>
 #include <linux/netlog.h>
+#include <linux/delay.h>
 
 #include "dfc_defs.h"
 
@@ -691,6 +692,8 @@ static struct qmi_elem_info dfc_tx_link_status_ind_v01_ei[] = {
 	},
 };
 
+#define RETRY_CNT				(20)
+#define QMI_ERR_INVALID_ARG_V01	(0x0030)
 static int
 dfc_bind_client_req(struct qmi_handle *dfc_handle,
 		    struct sockaddr_qrtr *ssctl, struct svc_info *svc)
@@ -740,6 +743,9 @@ dfc_bind_client_req(struct qmi_handle *dfc_handle,
 		pr_err("%s() Request rejected, result: %d, err: %d\n",
 			__func__, resp->resp.result, resp->resp.error);
 		ret = -resp->resp.result;
+		if (ret == -QMI_RESULT_FAILURE_V01 
+			&& resp->resp.error == QMI_ERR_INVALID_ARG_V01)
+			ret = resp->resp.error;
 	}
 
 out:
@@ -864,10 +870,19 @@ out:
 static int dfc_init_service(struct dfc_qmi_data *data)
 {
 	int rc;
+	int cnt = RETRY_CNT;
 
 	rc = dfc_bind_client_req(&data->handle, &data->ssctl, &data->svc);
-	if (rc < 0)
+	while (rc == QMI_ERR_INVALID_ARG_V01 && --cnt) {
+		mdelay(20);
+		net_log("%s() dfc_bind_client_req() tried: %d\n", __func__, RETRY_CNT - cnt);
+		rc = dfc_bind_client_req(&data->handle, &data->ssctl, &data->svc);
+	}
+
+	if (rc < 0) {
+		net_log("%s() dfc_bind_client_req() failed: %d, %d\n", __func__, RETRY_CNT - cnt, rc);
 		return rc;
+	}
 
 	return dfc_indication_register_req(&data->handle, &data->ssctl, 1);
 }

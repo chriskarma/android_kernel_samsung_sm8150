@@ -2330,6 +2330,13 @@ config MACH_BLOOMQ_JPN_KDI
         help
           Support for Samsung BLOOMQ JPN KDI device.
 
+config MACH_BLOOMQ_JPN_OPEN
+        depends on SEC_BLOOMQ_PROJECT
+        default n
+        bool "Samsung BLOOMQ JPN OPEN"
+        help
+          Support for Samsung BLOOMQ JPN OPEN device.
+
 config SEC_R3Q_PROJECT
         depends on ARCH_SM8150
         default n

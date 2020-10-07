@@ -71,6 +71,7 @@ enum {
 };
 
 #if defined(CONFIG_SUPPORT_BHL_COMPENSATION_FOR_LIGHT_SENSOR) || \
+	defined(CONFIG_SUPPORT_BRIGHT_SYSFS_COMPENSATION_LUX) || \
 	defined(CONFIG_SUPPORT_BRIGHT_COMPENSATION_LUX)
 enum {
 	OPTION_TYPE_COPR_ENABLE,
@@ -109,11 +110,13 @@ struct adsp_data {
 #endif
 	struct notifier_block adsp_nb;
 	int32_t fac_fstate;
-#ifdef CONFIG_SUPPORT_BHL_COMPENSATION_FOR_LIGHT_SENSOR
+#if defined(CONFIG_SUPPORT_BHL_COMPENSATION_FOR_LIGHT_SENSOR) || \
+	defined(CONFIG_SUPPORT_BRIGHT_SYSFS_COMPENSATION_LUX)
 	int32_t light_cal;
 #endif
 	uint32_t support_algo;
 	bool restrict_mode;
+	bool init_work_done;
 };
 
 #ifdef CONFIG_SUPPORT_MOBEAM
@@ -176,7 +179,8 @@ void prox_factory_init_work(void);
 void digital_hall_factory_auto_cal_init_work(void);
 int get_hall_angle_data(int32_t *raw_data);
 #endif
-#if defined(CONFIG_SUPPORT_BHL_COMPENSATION_FOR_LIGHT_SENSOR)
+#if defined(CONFIG_SUPPORT_BHL_COMPENSATION_FOR_LIGHT_SENSOR) || \
+	defined(CONFIG_SUPPORT_BRIGHT_SYSFS_COMPENSATION_LUX)
 int get_light_sidx(struct adsp_data *data);
 #endif
 #endif /* __ADSP_SENSOR_H__ */

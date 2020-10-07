@@ -149,11 +149,12 @@ int sysboot_connect(struct cam_ois_ctrl_t *o_ctrl)
 		/* Change BOOT pins to System Bootloader */
 		gpio_direction_output(o_ctrl->boot0_ctrl_gpio, 1);
 		/* NRST should hold down (Vnf(NRST) > 300 ns), considering capacitor, give enough time */
-		mdelay(BOOT_NRST_PULSE_INTVL);
+		usleep_range(BOOT_NRST_PULSE_INTVL* 1000,
+			BOOT_NRST_PULSE_INTVL* 1000 + 1000);
 		/* Release NRST reset */
 		gpio_direction_output(o_ctrl->reset_ctrl_gpio, 1);
 		/* Put little delay for the target prepared */
-		mdelay(BOOT_I2C_STARTUP_DELAY);
+		msleep(BOOT_I2C_STARTUP_DELAY);
 		gpio_direction_output(o_ctrl->boot0_ctrl_gpio, 0);
 	}
 	/* STEP2. Send SYNC frame then waiting for ACK */
@@ -167,11 +168,12 @@ int sysboot_connect(struct cam_ois_ctrl_t *o_ctrl)
 			gpio_direction_output(o_ctrl->reset_ctrl_gpio, 0);
 			gpio_direction_output(o_ctrl->boot0_ctrl_gpio, 1);
 			/* NRST should hold down (Vnf(NRST) > 300 ns), considering capacitor, give enough time */
-			mdelay(BOOT_NRST_PULSE_INTVL);
+			usleep_range(BOOT_NRST_PULSE_INTVL* 1000,
+				BOOT_NRST_PULSE_INTVL* 1000 + 1000);
 			/* Release NRST reset */
 			gpio_direction_output(o_ctrl->reset_ctrl_gpio, 1);
 			/* Put little delay for the target prepared */
-			mdelay(BOOT_I2C_STARTUP_DELAY);
+			msleep(BOOT_I2C_STARTUP_DELAY);
 			gpio_direction_output(o_ctrl->boot0_ctrl_gpio, 0);
 		}
 	}

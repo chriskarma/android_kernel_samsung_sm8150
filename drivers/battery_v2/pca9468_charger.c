@@ -109,11 +109,11 @@ static int pca9468_update_reg(struct pca9468_charger *pca9468, int reg, u8 mask,
 		if (val == PCA9468_STANDBY_DONOT) {
 			pr_info("%s: PCA9468_STANDBY_DONOT 50ms\n", __func__);
 			/* Wait 50ms, first to keep the start-up sequence */
-			mdelay(50);
+			msleep(50);
 		} else {
 			pr_info("%s: PCA9468_STANDBY_FORCED 5ms\n", __func__);
 			/* Wait 5ms to keep the shutdown sequence */
-			mdelay(5);
+			usleep_range(5000, 6000);
 		}
 	}
 	mutex_unlock(&pca9468->i2c_lock);

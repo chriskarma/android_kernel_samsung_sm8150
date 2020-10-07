@@ -292,9 +292,6 @@ struct sde_encoder_virt {
 	bool recovery_events_enabled;
 	bool elevated_ahb_vote;
 	struct pm_qos_request pm_qos_cpu_req;
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	spinlock_t input_handler_lock;
-#endif
 };
 
 #define to_sde_encoder_virt(x) container_of(x, struct sde_encoder_virt, base)
@@ -2277,9 +2274,7 @@ static int _sde_encoder_resource_control_helper(struct drm_encoder *drm_enc,
 
 	return 0;
 }
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-static bool ss_input_handler_registered = false;
-#endif
+
 static void sde_encoder_input_event_handler(struct input_handle *handle,
 	unsigned int type, unsigned int code, int value)
 {
@@ -2288,7 +2283,7 @@ static void sde_encoder_input_event_handler(struct input_handle *handle,
 	struct msm_drm_thread *disp_thread = NULL;
 	struct msm_drm_private *priv = NULL;
 #if defined(CONFIG_DISPLAY_SAMSUNG)
-	unsigned long lock_flags;
+	struct samsung_display_driver_data *vdd = NULL;
 #endif
 
 	if (!handle || !handle->handler || !handle->handler->private) {
@@ -2304,6 +2299,20 @@ static void sde_encoder_input_event_handler(struct input_handle *handle,
 
 	priv = drm_enc->dev->dev_private;
 	sde_enc = to_sde_encoder_virt(drm_enc);
+
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+	if (!sde_enc->crtc) {
+		SDE_ERROR("invalid crtc\n");
+		return;
+	}
+	SDE_DEBUG("sde_enc->crtc->index %d \n", sde_enc->crtc->index);
+	vdd = ss_get_vdd(sde_enc->crtc->index);
+	if (ss_is_panel_off(vdd)) {
+		SDE_ERROR("invalid call during power off\n");
+		return;
+	}
+#endif
+
 	if (!sde_enc->crtc || (sde_enc->crtc->index
 			>= ARRAY_SIZE(priv->disp_thread))) {
 		SDE_DEBUG_ENC(sde_enc,
@@ -2313,18 +2322,9 @@ static void sde_encoder_input_event_handler(struct input_handle *handle,
 		return;
 	}
 
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	if(!ss_input_handler_registered)
-		return;
-	spin_lock_irqsave(&sde_enc->input_handler_lock, lock_flags);
-#endif
-
 	SDE_EVT32_VERBOSE(DRMID(drm_enc));
-	
+
 	disp_thread = &priv->disp_thread[sde_enc->crtc->index];
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	spin_unlock_irqrestore(&sde_enc->input_handler_lock, lock_flags);
-#endif
 
 	kthread_queue_work(&disp_thread->worker,
 				&sde_enc->input_event_work);
@@ -3051,6 +3051,15 @@ static int _sde_encoder_input_handler_register(
 {
 	int rc = 0;
 
+#if defined(CONFIG_DISPLAY_SAMSUNG)
+        static bool input_handler_registered = false;
+
+        if (input_handler_registered)
+                return rc;
+        else
+                input_handler_registered = true;
+#endif
+
 	rc = input_register_handler(input_handler);
 	if (rc) {
 		pr_err("input_register_handler failed, rc= %d\n", rc);
@@ -3247,9 +3256,6 @@ static void sde_encoder_virt_enable(struct drm_encoder *drm_enc)
 		SDE_ERROR("virt encoder has no master! num_phys %d\n", i);
 		return;
 	}
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	ss_input_handler_registered = true;
-#endif
 
 	/* register input handler if not already registered */
 	if (sde_enc->input_handler && !sde_enc->input_handler_registered &&
@@ -3334,9 +3340,6 @@ static void sde_encoder_virt_disable(struct drm_encoder *drm_enc)
 	struct sde_kms *sde_kms;
 	enum sde_intf_mode intf_mode;
 	int i = 0;
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	unsigned long lock_flags;
-#endif
 
 	if (!drm_enc) {
 		SDE_ERROR("invalid encoder\n");
@@ -3367,6 +3370,7 @@ static void sde_encoder_virt_disable(struct drm_encoder *drm_enc)
 	sde_encoder_wait_for_event(drm_enc, MSM_ENC_TX_COMPLETE);
 
 #if !defined(CONFIG_DISPLAY_SAMSUNG)
+	/* CL 16617782 : Excessive delay in setPowerMode because of pending display off */
 	if (sde_enc->input_handler && sde_enc->input_handler_registered) {
 		input_unregister_handler(sde_enc->input_handler);
 		sde_enc->input_handler_registered = false;
@@ -3422,11 +3426,6 @@ static void sde_encoder_virt_disable(struct drm_encoder *drm_enc)
 
 	sde_encoder_resource_control(drm_enc, SDE_ENC_RC_EVENT_STOP);
 
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	spin_lock_irqsave(&sde_enc->input_handler_lock, lock_flags);
-	ss_input_handler_registered = false;
-#endif
-
 	for (i = 0; i < sde_enc->num_phys_encs; i++) {
 		if (sde_enc->phys_encs[i]) {
 			sde_enc->phys_encs[i]->cont_splash_enabled = false;
@@ -3443,9 +3442,7 @@ static void sde_encoder_virt_disable(struct drm_encoder *drm_enc)
 	sde_enc->crtc = NULL;
 
 	SDE_DEBUG_ENC(sde_enc, "encoder disabled\n");
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	spin_unlock_irqrestore(&sde_enc->input_handler_lock, lock_flags);
-#endif
+
 	sde_rm_release(&sde_kms->rm, drm_enc);
 }
 
@@ -5565,9 +5562,6 @@ struct drm_encoder *sde_encoder_init_with_ops(
 	}
 
 	mutex_init(&sde_enc->rc_lock);
-#if defined(CONFIG_DISPLAY_SAMSUNG)
-	spin_lock_init(&sde_enc->input_handler_lock);
-#endif
 	kthread_init_delayed_work(&sde_enc->delayed_off_work,
 			sde_encoder_off_work);
 	sde_enc->vblank_enabled = false;

@@ -247,3 +247,15 @@ config SUPPORT_SSC_MODE_FOR_MAG
 	default n
 	help
 	  Support the ssc mode for mag function.
+
+config SUPPORT_SLPI_NACK_FORCE_SSR
+	tristate "Support the force ssr when the slpi is no response."
+	default n
+	help
+	  Support the force ssr when the slpi is no response	  
+
+config SUPPORT_SSC_AOD_RECT
+	tristate "Support getting AOD rect"
+	default n
+	help
+	  Support getting AOD rec.

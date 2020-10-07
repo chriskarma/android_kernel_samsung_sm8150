@@ -473,6 +473,7 @@ static int process_received_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 #ifdef CONFIG_SUPPORT_AK0997X
 		digital_hall_factory_auto_cal_init_work();
 #endif
+		data->init_work_done = true;
 		return 0;
 	}
 
@@ -536,6 +537,8 @@ static int __init factory_adsp_init(void)
 		data->ready_flag[i] = 0;
 
 	data->restrict_mode = false;
+	data->init_work_done = false;
+
 	mutex_init(&data->accel_factory_mutex);
 	mutex_init(&data->prox_factory_mutex);
 	mutex_init(&data->light_factory_mutex);

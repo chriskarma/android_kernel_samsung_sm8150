@@ -16,9 +16,10 @@
 #define USE_HMP_BOOST
 #endif
 
+#define ITAG	" [Input Booster] "
 #define pr_booster(format, ...) { \
 	if (debug_flag) \
-		printk(format, ## __VA_ARGS__); \
+		printk(ITAG format, ## __VA_ARGS__); \
 }
 
 #define MAX_MULTI_TOUCH_EVENTS		10
@@ -27,11 +28,16 @@
 #define INPUT_BOOSTER_NULL	-1
 #define INIT_ZERO	0
 
+
 static unsigned int debug_flag = INIT_ZERO;
 static unsigned int enable_event_booster = INIT_ZERO;
 
 #define HEADGAGE "******"
 #define TAILGAGE "****  "
+
+#define GET_MAX_SIZE(param_size, orig_size) { \
+	max_size = sizeof(param_size)/sizeof(orig_size); \
+}
 
 #if defined(CONFIG_ARCH_EXYNOS) //______________________________________________________________________________
 #define set_qos(req, pm_qos_class, value) { \
@@ -57,7 +63,7 @@ static unsigned int enable_event_booster = INIT_ZERO;
 #ifdef USE_HMP_BOOST
 #define set_hmp(enable)	 { \
 	if (enable != current_hmp_boost) { \
-		pr_booster("[Input Booster2] ******      set_hmp : %d ( %s )\n", enable, __FUNCTION__); \
+		pr_booster("[Input Booster2] ******      set_hmp : %d ( %s )\n", enable, __func__); \
 		if (set_hmp_boost(enable) < 0) {\
 			pr_booster("[Input Booster2] ******            !!! fail to HMP !!!\n"); \
 		} \
@@ -198,10 +204,11 @@ static int trans_freq_to_idx(int request_ddr_freq)
 	if (NUM_BUS_TABLE == 1)
 		return 0;
 
-	for (i = 0; i < NUM_BUS_TABLE-1; i++)
+	for (i = 0; i < NUM_BUS_TABLE-1; i++) {
 		if (request_ddr_freq > ab_ib_bus_vectors[i][1] &&
 			request_ddr_freq <= ab_ib_bus_vectors[i+1][1]) {
 			return (i+1);
+		}
 	}
 
 	return 0;
@@ -224,7 +231,7 @@ static u32 bus_hdl;
 		} else {\
 			current_hmp_boost = level; \
 		} \
-		pr_booster("[Input Booster2] ******      set_hmp : %d ( %s )\n", level, __FUNCTION__); \
+		pr_booster("[Input Booster2] ******      set_hmp : %d ( %s )\n", level, __func__); \
 		if (sched_set_boost(level) < 0) { \
 			pr_booster("[Input Booster2] ******            !!! fail to HMP !!!\n"); \
 		} \
@@ -381,7 +388,7 @@ static struct pm_qos_request lpm_bias_pm_qos_request;
 	} \
 }
 #define CHANGE_BOOSTER { \
-	struct t_input_booster_device_tree_param *head_param = NULL, *tail_param = NULL; \
+	struct t_ib_dev_tree_param *head_param = NULL, *tail_param = NULL; \
 	GET_BOOSTER_PARAM(dt_gender, head_param, tail_param) \
 	memset(dt_gender->pBooster->param, 0x00, sizeof(struct t_input_booster_param)*2); \
 	if (head_param != NULL) { \
@@ -394,8 +401,8 @@ static struct pm_qos_request lpm_bias_pm_qos_request;
 
 #define INIT_BOOSTER(_DEVICE_) { \
 	_DEVICE_##_booster.input_booster_state = input_booster_idle_state; \
-	INIT_DELAYED_WORK(&_DEVICE_##_booster.input_booster_timeout_work[0], TIMEOUT_FUNC(_DEVICE_)); \
-	INIT_DELAYED_WORK(&_DEVICE_##_booster.input_booster_timeout_work[1], TIMEOUT_FUNC(_DEVICE_)); \
+	INIT_DELAYED_WORK(&_DEVICE_##_booster.ib_timeout_work[0], TIMEOUT_FUNC(_DEVICE_)); \
+	INIT_DELAYED_WORK(&_DEVICE_##_booster.ib_timeout_work[1], TIMEOUT_FUNC(_DEVICE_)); \
 	INIT_WORK(&_DEVICE_##_booster.input_booster_set_booster_work, SET_BOOSTER_FUNC(_DEVICE_)); \
 	mutex_init(&_DEVICE_##_booster.lock); \
 	_DEVICE_##_booster.change_on_release = 0; \
@@ -406,8 +413,9 @@ static struct pm_qos_request lpm_bias_pm_qos_request;
 			_DEVICE_##_booster.level = -1; \
 		} \
 		for (i = 0; i < ndevice_in_dt; i++) { \
-			if (device_tree_infor[i].type == _DEVICE_##_booster_dt.type) { \
-				struct t_input_booster_device_tree_gender *dt_gender = &_DEVICE_##_booster_dt; \
+			if (is_ib_init_succeed() && \
+					device_tree_infor[i].type == _DEVICE_##_booster_dt.type) { \
+				struct t_ib_dev_tree_gender *dt_gender = &_DEVICE_##_booster_dt; \
 				dt_gender->pDT = &device_tree_infor[i]; \
 				dt_gender->pBooster = &_DEVICE_##_booster; \
 				CHANGE_BOOSTER \
@@ -425,30 +433,30 @@ static void input_booster_##_DEVICE_##_timeout_work_func(struct work_struct *wor
 	struct t_input_booster *_this = &_DEVICE_##_booster; \
 	int param_max = sizeof(_this->param)/sizeof(struct t_input_booster_param), temp_index = -1;  \
 	mutex_lock(&_this->lock); \
-	pr_booster("[Input Booster] %s           Timeout : changed  index : %d (%s)\n", HEADGAGE, _this->index, __FUNCTION__); \
-	if (_this->index >= 2 && delayed_work_pending(&_this->input_booster_timeout_work[_this->index-2])) { \
+	pr_booster("[Input Booster] %s           Timeout : changed  index : %d (%s)\n", HEADGAGE, _this->index, __func__); \
+	if (_this->index >= 2 && delayed_work_pending(&_this->ib_timeout_work[_this->index-2])) { \
 		mutex_unlock(&_this->lock); \
 		return; \
 	} \
-	if (_this->index == param_max && delayed_work_pending(&_this->input_booster_timeout_work[_this->index-1])) { \
+	if (_this->index == param_max && delayed_work_pending(&_this->ib_timeout_work[_this->index-1])) { \
 		temp_index = _this->index; \
 		_this->index = (_this->index) ? _this->index-1 : 0; \
 	} \
-	pr_booster("[Input Booster] %s           Timeout : changed  index : %d (%s)\n", HEADGAGE, _this->index, __FUNCTION__); \
+	pr_booster("[Input Booster] %s           Timeout : changed  index : %d (%s)\n", HEADGAGE, _this->index, __func__); \
 	if (_this->index < param_max) { \
-		pr_booster("[Input Booster] %s           Timeout : changed  index : %d, time : %d (%s)\n", HEADGAGE, _this->index, _this->param[_this->index].time, __FUNCTION__); \
-		pr_booster("[Input Booster] %s           cpu : %d (%s)\n", TAILGAGE, _this->param[_this->index].cpu_freq, __FUNCTION__); \
+		pr_booster("[Input Booster] %s           Timeout : changed  index : %d, time : %d (%s)\n", HEADGAGE, _this->index, _this->param[_this->index].time, __func__); \
+		pr_booster("[Input Booster] %s           cpu : %d (%s)\n", TAILGAGE, _this->param[_this->index].cpu_freq, __func__); \
 		if (_this->param[(_this->index) ? _this->index-1 : 0].time > 0) { \
 			SET_BOOSTER; \
 			if (_this->change_on_release) { \
-				schedule_delayed_work(&_this->input_booster_timeout_work[_this->index], msecs_to_jiffies(_this->param[_this->index].time)); \
+				schedule_delayed_work(&_this->ib_timeout_work[_this->index], msecs_to_jiffies(_this->param[_this->index].time)); \
 				_this->index++; \
 				CHANGE_STATE_TO(idle); \
 			} \
 		} \
 		_this->index = (temp_index >= 0) ? temp_index : _this->index; \
 	} else { \
-		pr_booster("[Input Booster] Timeout : completed   param_max : %d (%s)\n", param_max, __FUNCTION__); \
+		pr_booster("[Input Booster] Timeout : completed   param_max : %d (%s)\n", param_max, __func__); \
 		pr_booster("[Input Booster]\n"); \
 		REMOVE_BOOSTER; \
 		_this->index = 0; \
@@ -488,7 +496,7 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 #define SYSFS_CLASS(_ATTR_, _ARGU_, _COUNT_) \
 	static ssize_t input_booster_sysfs_class_show_##_ATTR_(struct class *dev, struct class_attribute *attr, char *buf) \
 	{ \
-		struct t_input_booster_device_tree_gender *dt_gender = &touch_booster_dt; \
+		struct t_ib_dev_tree_gender *dt_gender = &touch_booster_dt; \
 		ssize_t ret; int level; \
 		unsigned int enable_event = 0; \
 		unsigned int debug_level = 0; \
@@ -498,7 +506,7 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 		unsigned int lpm_bias = 0; \
 		unsigned int head_time = 0; \
 		unsigned int tail_time = 0; \
-		struct t_input_booster_device_tree_param *head_param = NULL, *tail_param = NULL; \
+		struct t_ib_dev_tree_param *head_param = NULL, *tail_param = NULL; \
 		GET_BOOSTER_PARAM(dt_gender, head_param, tail_param) \
 		enable_event = enable_event_booster; \
 		debug_level = debug_flag; \
@@ -510,12 +518,12 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 			SYSFS_COPY_FROM(tail_param->) \
 		} \
 		ret = sprintf _ARGU_; \
-		pr_booster("[Input Booster8] %s buf : %s\n", __FUNCTION__, buf); \
+		pr_booster("[Input Booster8] %s buf : %s\n", __func__, buf); \
 		return ret; \
 	} \
 	static ssize_t input_booster_sysfs_class_store_##_ATTR_(struct class *dev, struct class_attribute *attr, const char *buf, size_t count) \
 	{ \
-		struct t_input_booster_device_tree_gender *dt_gender = &touch_booster_dt; \
+		struct t_ib_dev_tree_gender *dt_gender = &touch_booster_dt; \
 		int level[1] = {-1}, len; \
 		unsigned int enable_event[1] = {-1}; \
 		unsigned int debug_level[1] = {-1}; \
@@ -525,10 +533,10 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 		unsigned int lpm_bias[1] = {-1}; \
 		unsigned int head_time[1] = {-1}; \
 		unsigned int tail_time[1] = {-1}; \
-		struct t_input_booster_device_tree_param *head_param = NULL, *tail_param = NULL; \
+		struct t_ib_dev_tree_param *head_param = NULL, *tail_param = NULL; \
 		GET_BOOSTER_PARAM(dt_gender, head_param, tail_param) \
 		len = sscanf _ARGU_; \
-		pr_booster("[Input Booster8] %s buf : %s\n", __FUNCTION__, buf); \
+		pr_booster("[Input Booster8] %s buf : %s\n", __func__, buf); \
 		if (sscanf _ARGU_ != _COUNT_) { \
 			return count; \
 		} \
@@ -549,7 +557,7 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 #define SYSFS_DEVICE(_ATTR_, _ARGU_, _COUNT_) \
 	static ssize_t input_booster_sysfs_device_show_##_ATTR_(struct device *dev, struct device_attribute *attr, char *buf) \
 	{ \
-		struct t_input_booster_device_tree_gender *dt_gender = dev_get_drvdata(dev); \
+		struct t_ib_dev_tree_gender *dt_gender = dev_get_drvdata(dev); \
 		ssize_t ret = 0; \
 		int level, Arg_count = _COUNT_; \
 		unsigned int debug_level = 0; \
@@ -559,7 +567,7 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 		unsigned int lpm_bias = 0; \
 		unsigned int head_time = 0; \
 		unsigned int tail_time = 0; \
-		struct t_input_booster_device_tree_param *head_param = NULL, *tail_param = NULL; \
+		struct t_ib_dev_tree_param *head_param = NULL, *tail_param = NULL; \
 		if (dt_gender == NULL) { \
 			return  ret; \
 		} \
@@ -567,7 +575,7 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 		if (Arg_count == 1) { \
 			level = dt_gender->level; \
 			ret = sprintf _ARGU_; \
-			pr_booster("[Input Booster8] %s buf : %s\n", __FUNCTION__, buf); \
+			pr_booster("[Input Booster8] %s buf : %s\n", __func__, buf); \
 		} else { \
 			if (head_param != NULL) { \
 				level = head_param->ilevels; \
@@ -583,14 +591,14 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 				SYSFS_COPY_FROM(tail_param->) \
 				ret += sprintf _ARGU_; \
 			} \
-			pr_booster("[Input Booster8] %s buf : %s\n", __FUNCTION__, buf); \
+			pr_booster("[Input Booster8] %s buf : %s\n", __func__, buf); \
 		} \
 		return  ret; \
 	} \
 	static ssize_t input_booster_sysfs_device_store_##_ATTR_(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) \
 	{ \
-		struct t_input_booster_device_tree_gender *dt_gender = dev_get_drvdata(dev); \
-		struct t_input_booster_device_tree_infor *dt_infor = (dt_gender) ? dt_gender->pDT : NULL; \
+		struct t_ib_dev_tree_gender *dt_gender = dev_get_drvdata(dev); \
+		struct t_ib_dev_tree_info *dt_infor = (dt_gender) ? dt_gender->pDT : NULL; \
 		int level[1] = {-1}, len; \
 		unsigned int debug_level[1] = {-1}; \
 		unsigned int cpu_freq[1] = {-1}; \
@@ -600,7 +608,7 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 		unsigned int head_time[1] = {-1}; \
 		unsigned int tail_time[1] = {-1}; \
 		len = sscanf _ARGU_; \
-		pr_booster("[Input Booster8] %s buf : %s\n", __FUNCTION__, buf); \
+		pr_booster("[Input Booster8] %s buf : %s\n", __func__, buf); \
 		if (dt_infor == NULL) { \
 			return  count; \
 		} \
@@ -619,7 +627,7 @@ static void input_booster_##_DEVICE_##_set_booster_work_func(struct work_struct 
 				for (k = 0; k < dt_infor->nlevels; k++) { \
 					if (level[0] == dt_infor->param_tables[k].ilevels) { \
 						SYSFS_COPY_TO_FROM(dt_infor->param_tables[k]., dt_infor->param_tables[k].) \
-						pr_booster("[Input Booster8] %s time : %d %d\n", __FUNCTION__, dt_infor->param_tables[*level].head_time, dt_infor->param_tables[k].tail_time); \
+						pr_booster("[Input Booster8] %s time : %d %d\n", __func__, dt_infor->param_tables[*level].head_time, dt_infor->param_tables[k].tail_time); \
 					} \
 				} \
 			} \
@@ -707,7 +715,7 @@ struct t_input_booster {
 	struct pm_qos_request	int_qos;
 #endif //______________________________________________________________________________
 
-	struct delayed_work     input_booster_timeout_work[2];
+	struct delayed_work     ib_timeout_work[2];
 	struct work_struct      input_booster_set_booster_work;
 
 	int index;
@@ -720,7 +728,7 @@ struct t_input_booster {
 };
 
 //+++++++++++++++++++++++++++++++++++++++++++++++  STRUCT & VARIABLE FOR DEVICE TREE  +++++++++++++++++++++++++++++++++++++++++++++++//
-struct t_input_booster_device_tree_param {
+struct t_ib_dev_tree_param {
 	u8		ilevels;
 
 #if defined(CONFIG_ARCH_EXYNOS) //______________________________________________________________________________
@@ -746,34 +754,34 @@ struct t_input_booster_device_tree_param {
 #endif //______________________________________________________________________________
 };
 
-struct t_input_booster_device_tree_infor {
+struct t_ib_dev_tree_info {
 	const char     *label;
 	int     type;
 	int     nlevels;
 
-	struct t_input_booster_device_tree_param      *param_tables;
+	struct t_ib_dev_tree_param      *param_tables;
 };
 
-struct t_input_booster_device_tree_gender {
+struct t_ib_dev_tree_gender {
 	int type;
 	int level;
 	struct t_input_booster	*pBooster;
-	struct t_input_booster_device_tree_infor *pDT;
+	struct t_ib_dev_tree_info *pDT;
 };
 
 //______________________________________________________________________________	<<< in DTSI file >>>
 //______________________________________________________________________________	input_booster,type = <4>;	/* BOOSTER_DEVICE_KEYBOARD */
 //______________________________________________________________________________
-struct t_input_booster_device_tree_gender	key_booster_dt = {0, 1,};		// type : 0,  level : 1
-struct t_input_booster_device_tree_gender	touchkey_booster_dt = {1, 1,};		// type : 1,  level : 1
-struct t_input_booster_device_tree_gender	touch_booster_dt = {2, 2,};		// type : 2,  level : 2
-struct t_input_booster_device_tree_gender	multitouch_booster_dt = {3, 1,};		// type : 3,  level : 1
-struct t_input_booster_device_tree_gender	keyboard_booster_dt = {4, 1,};		// type : 4,  level : 1
-struct t_input_booster_device_tree_gender	mouse_booster_dt = {5, 1,};		// type : 5,  level : 1
-struct t_input_booster_device_tree_gender	mouse_wheel_booster_dt = {6, 1,};	// type : 6,  level : 1
-struct t_input_booster_device_tree_gender	hover_booster_dt = {7, 1,};		// type : 7,  level : 1
-struct t_input_booster_device_tree_gender	pen_booster_dt = {8, 1,};			// type : 8,  level : 1
-struct t_input_booster_device_tree_infor	*device_tree_infor;
+struct t_ib_dev_tree_gender	key_booster_dt = {0, 1,};		// type : 0,  level : 1
+struct t_ib_dev_tree_gender	touchkey_booster_dt = {1, 1,};		// type : 1,  level : 1
+struct t_ib_dev_tree_gender	touch_booster_dt = {2, 2,};		// type : 2,  level : 2
+struct t_ib_dev_tree_gender	multitouch_booster_dt = {3, 1,};		// type : 3,  level : 1
+struct t_ib_dev_tree_gender	keyboard_booster_dt = {4, 1,};		// type : 4,  level : 1
+struct t_ib_dev_tree_gender	mouse_booster_dt = {5, 1,};		// type : 5,  level : 1
+struct t_ib_dev_tree_gender	mouse_wheel_booster_dt = {6, 1,};	// type : 6,  level : 1
+struct t_ib_dev_tree_gender	hover_booster_dt = {7, 1,};		// type : 7,  level : 1
+struct t_ib_dev_tree_gender	pen_booster_dt = {8, 1,};			// type : 8,  level : 1
+struct t_ib_dev_tree_info	*device_tree_infor;
 
 int ndevice_in_dt;
 //----------------------------------------------  STRUCT & VARIABLE FOR DEVICE TREE  ----------------------------------------------//
@@ -809,13 +817,13 @@ static ssize_t input_booster_sysfs_device_store_control(struct device *dev, stru
 		return count;
 	}
 
-	pr_booster("[Input Booster8] %s buf : %s\n", __FUNCTION__, buf);
+	pr_booster("[Input Booster8] %s buf : %s\n", __func__, buf);
 
-	if(value == 1) { 
+	if(value == 1) {
 		input_booster_run_booster_on();
 	}
 
-	if(value == 0) { 
+	if(value == 0) {
 		input_booster_run_booster_off();
 	}
 
@@ -861,9 +869,9 @@ struct t_input_booster *t_input_boosters[] = {
 	&pen_booster
 };
 
-struct device_type_info {
+struct ib_info {
 	struct t_input_booster *input_booster;
-	struct t_input_booster_device_tree_gender *input_booster_dt;
+	struct t_ib_dev_tree_gender *input_booster_dt;
 };
 
 #define MAX_T_INPUT_BOOSTER(ref, _PARAM_) { \
@@ -896,17 +904,21 @@ void input_booster_run_booster_on(void)
 {
 	touch_booster.input_booster_state = input_booster_idle_state;
 
-	struct t_input_booster_device_tree_gender *trgt_booster_dt = &touch_booster_dt;
+	struct t_ib_dev_tree_gender *trgt_booster_dt = &touch_booster_dt;
 	struct t_input_booster *trgt_booster = &touch_booster;
-	
+
 	RUN_BOOSTER(BOOSTER_ON,trgt_booster,trgt_booster_dt);
 }
 
 void input_booster_run_booster_off(void)
 {
-
-	struct t_input_booster_device_tree_gender *trgt_booster_dt = &touch_booster_dt;
+	struct t_ib_dev_tree_gender *trgt_booster_dt = &touch_booster_dt;
 	struct t_input_booster *trgt_booster = &touch_booster;
 	RUN_BOOSTER(BOOSTER_OFF,trgt_booster,trgt_booster_dt);
+}
+
+int is_ib_init_succeed()
+{
+	return (device_tree_infor != NULL) ? 1 : 0;
 }
 #endif
