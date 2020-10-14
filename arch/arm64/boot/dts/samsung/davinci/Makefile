@@ -97,6 +97,23 @@ dtbo-y = sm8150-sec-d2xq-chn-overlay-r00.dtbo \
 	sm8150-sec-d2xq-chn-overlay-r14.dtbo
 endif
 
+ifeq ($(filter y,$(CONFIG_MACH_D2XQ_MEA_OPEN)),y)
+dtbo-y = sm8150-sec-d2xq-overlay-r00.dtbo \
+	sm8150-sec-d2xq-overlay-r01.dtbo \
+	sm8150-sec-d2xq-overlay-r02.dtbo \
+	sm8150-sec-d2xq-overlay-r03.dtbo \
+	sm8150-sec-d2xq-overlay-r04.dtbo \
+	sm8150-sec-d2xq-overlay-r06.dtbo \
+	sm8150-sec-d2xq-overlay-r07.dtbo \
+	sm8150-sec-d2xq-overlay-r08.dtbo \
+	sm8150-sec-d2xq-overlay-r09.dtbo \
+	sm8150-sec-d2xq-overlay-r10.dtbo \
+	sm8150-sec-d2xq-overlay-r11.dtbo \
+	sm8150-sec-d2xq-overlay-r12.dtbo \
+	sm8150-sec-d2xq-overlay-r13.dtbo \
+	sm8150-sec-d2xq-mea-overlay-r14.dtbo
+endif
+
 dtbo-$(CONFIG_MACH_D2XQ2_USA_SINGLE) = sm8150p-sec-d2xq2-overlay-r00.dtbo \
 	sm8150p-sec-d2xq2-overlay-r09.dtbo \
 	sm8150p-sec-d2xq2-overlay-r10.dtbo \
@@ -125,6 +142,7 @@ sm8150-sec-d2xq-overlay-r11.dtbo-base := $(QCOM_DTB)/sm8150.dtb $(QCOM_DTB)/sm81
 sm8150-sec-d2xq-overlay-r12.dtbo-base := $(QCOM_DTB)/sm8150.dtb $(QCOM_DTB)/sm8150-v2.dtb
 sm8150-sec-d2xq-overlay-r13.dtbo-base := $(QCOM_DTB)/sm8150.dtb $(QCOM_DTB)/sm8150-v2.dtb
 sm8150-sec-d2xq-overlay-r14.dtbo-base := $(QCOM_DTB)/sm8150.dtb $(QCOM_DTB)/sm8150-v2.dtb
+sm8150-sec-d2xq-mea-overlay-r14.dtbo-base := $(QCOM_DTB)/sm8150.dtb $(QCOM_DTB)/sm8150-v2.dtb
 sm8150-sec-d2q-overlay-r00.dtbo-base := $(QCOM_DTB)/sm8150.dtb $(QCOM_DTB)/sm8150-v2.dtb
 sm8150-sec-d2q-overlay-r01.dtbo-base := $(QCOM_DTB)/sm8150.dtb $(QCOM_DTB)/sm8150-v2.dtb
 sm8150-sec-d2q-overlay-r02.dtbo-base := $(QCOM_DTB)/sm8150.dtb $(QCOM_DTB)/sm8150-v2.dtb
