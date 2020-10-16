@@ -8704,7 +8704,7 @@
 				battery,battery_full_capacity = <0x1130>;
 				battery,cisd_max_voltage_thr = <0x1130>;
 				battery,cisd_alg_index = <0x8>;
-				battery,ignore_cisd_index = <0x0 0x3c0>;
+				battery,ignore_cisd_index = <0x0 0x0>;
 				battery,ignore_cisd_index_d = <0x0 0x78>;
 				battery,tx_stop_capacity = <0x1e>;
 				battery,tx_minduty_default = <0x14>;
